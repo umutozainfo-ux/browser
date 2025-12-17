@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  server:
+    build: ./server
+    ports:
+      - "5000:5000"
+    networks:
+      - browser-net
+
+  node:
+    build: ./node
+    environment:
+      - SERVER_URL=http://server:5000
+    depends_on:
+      - server
+    networks:
+      - browser-net
+    # Scale this service to add more browsers (e.g., --scale node=5)
+    deploy:
+      replicas: 1
+
+networks:
+  browser-net:
+    driver: bridge

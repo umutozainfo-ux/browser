@@ -1,0 +1,4 @@
+quart
+python-socketio
+uvicorn
+jinja2

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Pro Browser Stream</title>
+    <style>
+        body { margin: 0; background: #000; color: #fff; font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; }
+        #controls { padding: 10px; background: #222; display: flex; gap: 10px; }
+        #video-container { flex: 1; display: flex; justify-content: center; align-items: center; position: relative; }
+        video { max-width: 100%; max-height: 100%; box-shadow: 0 0 20px rgba(255,255,255,0.1); }
+        .status { font-size: 12px; color: #888; margin-left: auto; }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <select id="browserList"><option value="">Select Browser...</option></select>
+        <button onclick="startStream()">Connect</button>
+        <div class="status" id="status">Disconnected</div>
+    </div>
+    <div id="video-container">
+        <video id="remoteVideo" autoplay playsinline muted></video>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let peerConnection;
+        let ptarget = null;
+        
+        const video = document.getElementById('remoteVideo');
+        const status = document.getElementById('status');
+        const browserList = document.getElementById('browserList');
+
+        socket.on('connect', () => {
+            status.textContent = 'Socket Connected';
+        });
+
+        socket.on('browser_list_update', (browsers) => {
+            browserList.innerHTML = '<option value="">Select Browser...</option>';
+            browsers.forEach(id => {
+                const opt = document.createElement('option');
+                opt.value = id;
+                opt.textContent = id;
+                browserList.appendChild(opt);
+            });
+        });
+
+        async function startStream() {
+            const target = browserList.value;
+            if (!target) return;
+            ptarget = target;
+            
+            peerConnection = new RTCPeerConnection({
+                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            });
+
+            peerConnection.ontrack = (event) => {
+                video.srcObject = event.streams[0];
+                status.textContent = 'Streaming...';
+            };
+
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.emit('ice_candidate', { target: ptarget, candidate: event.candidate });
+                }
+            };
+
+            // Create Offer
+            peerConnection.addTransceiver('video', { direction: 'recvonly' });
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+
+            socket.emit('offer', { target: ptarget, sdp: offer.sdp, type: offer.type });
+            status.textContent = 'Offer sent...';
+        }
+
+        socket.on('answer', async (data) => {
+            await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+        });
+
+        socket.on('ice_candidate', async (data) => {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+        });
+
+        // Interactive Controls
+        video.addEventListener('mousemove', (e) => {
+            if(!ptarget) return;
+            const rect = video.getBoundingClientRect();
+            // Calculate scale in case video is resized
+            // Note: video.videoWidth is the actual resolution
+            const scaleX = video.videoWidth / rect.width;
+            const scaleY = video.videoHeight / rect.height;
+            
+            const x = (e.clientX - rect.left) * scaleX;
+            const y = (e.clientY - rect.top) * scaleY;
+            
+            socket.emit('control_event', { target: ptarget, type: 'mousemove', x: x, y: y });
+        });
+
+        video.addEventListener('mousedown', (e) => {
+             if(!ptarget) return;
+             socket.emit('control_event', { target: ptarget, type: 'mousedown' });
+        });
+        
+        video.addEventListener('mouseup', (e) => {
+             if(!ptarget) return;
+             socket.emit('control_event', { target: ptarget, type: 'mouseup' });
+        });
+
+        window.addEventListener('keydown', (e) => {
+            if(!ptarget) return;
+            socket.emit('control_event', { target: ptarget, type: 'keydown', key: e.key });
+        });
+    </script>
+</body>
+</html>
