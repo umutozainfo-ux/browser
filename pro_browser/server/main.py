@@ -20,6 +20,8 @@ async def index():
 @sio.event
 async def connect(sid, environ):
     logger.info(f"Client connected: {sid}")
+    # Immediately sync current browsers to the new client (UI)
+    await sio.emit('browser_list_update', list(browsers.values()), room=sid)
 
 @sio.event
 async def disconnect(sid):
