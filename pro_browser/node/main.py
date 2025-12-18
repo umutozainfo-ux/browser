@@ -179,12 +179,29 @@ async def main():
 
     while True:
         try:
-            await browser.close() 
-            logger.info("Initializing Browser...")
-            await browser.start()
             if not sio.connected:
                 logger.info(f"Connecting to server at {server_url}...")
                 await sio.connect(server_url, wait_timeout=10)
+            
+            # Request random proxy from server
+            proxy = None
+            try:
+                proxy = await sio.call('request_proxy', {}, timeout=5)
+            except Exception as e:
+                logger.warning(f"Failed to fetch proxy: {e}")
+
+            logger.info("Initializing Browser...")
+            try:
+                await browser.start(proxy=proxy)
+            except Exception as e:
+                if "PROXY_FAILURE" in str(e):
+                    logger.warning("Proxy failed, falling back to direct connection...")
+                    await browser.start(proxy=None)
+                else:
+                    raise e
+            
+            if not sio.connected:
+                await sio.connect(server_url, wait_timeout=5)
             else:
                 await sio.emit('register_browser', {'id': NODE_ID})
             

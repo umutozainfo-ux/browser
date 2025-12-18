@@ -23,28 +23,32 @@ class BrowserManager:
         self.width = 1280
         self.height = 720
         self.lock = asyncio.Lock()
+        self.input_lock = asyncio.Lock()
 
-    async def start(self):
+    async def start(self, proxy: Optional[dict] = None):
         logger.info("Wait for lock to START browser...")
         async with self.lock:
             if self.running: 
                 logger.info("Browser already running.")
                 return
-            logger.info("Acquired lock. Starting Browser...")
+            logger.info(f"Acquired lock. Starting Browser (Proxy: {proxy['server'] if proxy else 'None'})...")
             try:
                 logger.info("Initializing Playwright...")
                 self.playwright = await async_playwright().start()
                 
                 logger.info("Launching Chromium...")
+                launch_args = [
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-infobars',
+                    '--window-size=1280,720',
+                    '--disable-blink-features=AutomationControlled'
+                ]
+                
                 self.browser = await self.playwright.chromium.launch(
                     headless=True,
-                    args=[
-                        '--no-sandbox',
-                        '--disable-setuid-sandbox',
-                        '--disable-infobars',
-                        '--window-size=1280,720',
-                        '--disable-blink-features=AutomationControlled'
-                    ]
+                    args=launch_args,
+                    proxy=proxy
                 )
                 
                 logger.info("Creating Context & Stealthing...")
@@ -61,7 +65,13 @@ class BrowserManager:
                 self.cdp = await self.context.new_cdp_session(self.page)
                 
                 logger.info("Navigating to initial page...")
-                await self.page.goto('https://www.google.com', wait_until="domcontentloaded", timeout=20000)
+                try:
+                    await self.page.goto('https://www.google.com', wait_until="domcontentloaded", timeout=15000)
+                except Exception as nav_e:
+                    logger.error(f"Initial navigation failed: {nav_e}")
+                    if "ERR_TUNNEL_CONNECTION_FAILED" in str(nav_e) or "ERR_PROXY_CONNECTION_FAILED" in str(nav_e):
+                        raise Exception(f"PROXY_FAILURE: {nav_e}")
+                    raise nav_e
                 
                 await self.start_screencast()
                 
@@ -70,6 +80,7 @@ class BrowserManager:
             except Exception as e:
                 logger.error(f"Failed to start browser: {e}")
                 await self._cleanup()
+                raise e # Re-raise to let the caller handle it
         logger.info("Released lock after START attempt.")
 
     async def start_screencast(self):
@@ -144,8 +155,10 @@ class BrowserManager:
             if type == 'mousemove':
                 await self.page.mouse.move(event['x'], event['y'])
             elif type == 'mousedown':
+                await self.page.mouse.move(event['x'], event['y'])
                 await self.page.mouse.down()
             elif type == 'mouseup':
+                await self.page.mouse.move(event['x'], event['y'])
                 await self.page.mouse.up()
             elif type == 'keydown':
                 await self.page.keyboard.press(event['key'])

@@ -29,6 +29,21 @@ def save_users(data):
     with open(USERS_FILE, 'w') as f:
         json.dump(data, f, indent=4)
 
+PROXIES_FILE = os.path.join(os.path.dirname(__file__), 'proxies.json')
+
+def load_proxies():
+    if not os.path.exists(PROXIES_FILE):
+        return []
+    with open(PROXIES_FILE, 'r') as f:
+        try:
+            return json.load(f)
+        except:
+            return []
+
+def save_proxies(proxies):
+    with open(PROXIES_FILE, 'w') as f:
+        json.dump(proxies, f, indent=4)
+
 # Store connected browsers
 # browsers[sid] = {'id': id, 'sid': sid, 'in_use_by': username or None, 'assigned_at': timestamp or None}
 browsers = {}
@@ -126,7 +141,39 @@ async def admin():
         diff = exp - datetime.datetime.now()
         user['expires_at_human'] = "Expired" if diff.total_seconds() < 0 else f"{int(diff.total_seconds() // 3600)}h {int((diff.total_seconds() % 3600) // 60)}m"
             
-    return await render_template('admin.html', users=db['users'], stats=get_stats())
+    return await render_template('admin.html', users=db['users'], stats=get_stats(), proxies=load_proxies())
+
+@app.route('/admin/proxy/add', methods=['POST'])
+@login_required
+async def admin_add_proxy():
+    if session.get('role') != 'admin': return abort(403)
+    form = await request.form
+    proxy_str = form.get('proxy_str', '').strip()
+    if not proxy_str: return redirect(url_for('admin'))
+    
+    parts = proxy_str.split(':')
+    proxy_obj = {"server": f"http://{parts[0]}:{parts[1]}"}
+    if len(parts) >= 4:
+        proxy_obj["username"] = parts[2]
+        proxy_obj["password"] = parts[3]
+    
+    proxies = load_proxies()
+    proxies.append(proxy_obj)
+    save_proxies(proxies)
+    return redirect(url_for('admin'))
+
+@app.route('/admin/proxy/delete', methods=['POST'])
+@login_required
+async def admin_delete_proxy():
+    if session.get('role') != 'admin': return abort(403)
+    form = await request.form
+    index = int(form.get('index', -1))
+    
+    proxies = load_proxies()
+    if 0 <= index < len(proxies):
+        proxies.pop(index)
+        save_proxies(proxies)
+    return redirect(url_for('admin'))
 
 @app.route('/admin/add', methods=['POST'])
 @login_required
@@ -453,6 +500,17 @@ async def control_event(sid, data):
                 await sio.emit('control_event', node_data, room=t)
         else:
             await sio.emit('control_event', data, room=targets)
+
+@sio.on('request_proxy')
+async def request_proxy(sid, data):
+    import random
+    proxies = load_proxies()
+    if not proxies:
+        return None
+    
+    selected = random.choice(proxies)
+    logger.info(f"Assigned proxy {selected['server']} to node {sid}")
+    return selected
 
 # --- Admin Management Tools ---
 

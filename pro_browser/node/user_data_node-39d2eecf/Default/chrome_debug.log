@@ -1,0 +1,14 @@
+[1218/160113.846:WARNING:content\browser\btm\btm_database.cc:128] Failed to initialize the DIPS SQLite database.
+[1218/160113.849:ERROR:net\disk_cache\cache_util_win.cc:25] Unable to move the cache: Access is denied. (0x5)
+[1218/160113.849:ERROR:net\disk_cache\cache_util_win.cc:25] Unable to move the cache: Access is denied. (0x5)
+[1218/160113.850:ERROR:net\disk_cache\cache_util_win.cc:25] Unable to move the cache: Access is denied. (0x5)
+[1218/160113.850:ERROR:net\disk_cache\disk_cache.cc:236] Unable to create cache
+[1218/160113.850:ERROR:gpu\ipc\host\gpu_disk_cache.cc:724] Gpu Cache Creation failed: -2
+[1218/160113.850:ERROR:net\disk_cache\disk_cache.cc:236] Unable to create cache
+[1218/160113.850:ERROR:gpu\ipc\host\gpu_disk_cache.cc:724] Gpu Cache Creation failed: -2
+[1218/160113.850:ERROR:net\disk_cache\disk_cache.cc:236] Unable to create cache
+[1218/160113.850:ERROR:gpu\ipc\host\gpu_disk_cache.cc:724] Gpu Cache Creation failed: -2
+[1218/160115.860:WARNING:components\leveldb_proto\internal\leveldb_database.cc:125] Unable to open D:\browser\browser\pro_browser\node\user_data_node-39d2eecf\Default\shared_proto_db\metadata: IO error: D:\browser\browser\pro_browser\node\user_data_node-39d2eecf\Default\shared_proto_db\metadata/LOCK: Access denied. (ChromeMethodBFE: 15::LockFile::5)
+[1218/160117.881:WARNING:components\leveldb_proto\internal\leveldb_database.cc:125] Unable to open D:\browser\browser\pro_browser\node\user_data_node-39d2eecf\Default\shared_proto_db\metadata: IO error: D:\browser\browser\pro_browser\node\user_data_node-39d2eecf\Default\shared_proto_db\metadata/LOCK: Access denied. (ChromeMethodBFE: 15::LockFile::5)
+[1218/160119.894:WARNING:components\leveldb_proto\internal\leveldb_database.cc:125] Unable to open D:\browser\browser\pro_browser\node\user_data_node-39d2eecf\Default\shared_proto_db\metadata: IO error: D:\browser\browser\pro_browser\node\user_data_node-39d2eecf\Default\shared_proto_db\metadata/LOCK: Access denied. (ChromeMethodBFE: 15::LockFile::5)
+[1218/160121.916:WARNING:components\leveldb_proto\internal\leveldb_database.cc:125] Unable to open D:\browser\browser\pro_browser\node\user_data_node-39d2eecf\Default\shared_proto_db\metadata: IO error: D:\browser\browser\pro_browser\node\user_data_node-39d2eecf\Default\shared_proto_db\metadata/LOCK: Access denied. (ChromeMethodBFE: 15::LockFile::5)

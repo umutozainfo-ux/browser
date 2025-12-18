@@ -191,6 +191,8 @@
             background: #000;
             position: relative;
             cursor: crosshair;
+            user-select: none;
+            -webkit-user-drag: none;
         }
 
         video {
@@ -625,9 +627,31 @@
             };
 
             // Event Listeners for Interaction
-            nodeData.video.addEventListener('mousemove', (e) => handleInteraction(b.sid, 'mousemove', e));
-            nodeData.video.addEventListener('mousedown', (e) => handleInteraction(b.sid, 'mousedown', e));
-            nodeData.video.addEventListener('mouseup', (e) => handleInteraction(b.sid, 'mouseup', e));
+            nodeData.video.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                const startX = e.clientX;
+                const startY = e.clientY;
+                let lastMove = 0;
+
+                const onMove = (moveEvent) => {
+                    const now = Date.now();
+                    if (now - lastMove > 16) { // ~60fps throttle
+                        handleInteraction(b.sid, 'mousemove', moveEvent);
+                        lastMove = now;
+                    }
+                };
+
+                const onUp = (upEvent) => {
+                    window.removeEventListener('mousemove', onMove);
+                    window.removeEventListener('mouseup', onUp);
+                    handleInteraction(b.sid, 'mouseup', upEvent);
+                };
+
+                window.addEventListener('mousemove', onMove);
+                window.addEventListener('mouseup', onUp);
+                handleInteraction(b.sid, 'mousedown', e);
+            });
+            nodeData.video.addEventListener('contextmenu', (e) => e.preventDefault());
 
             nodes.set(b.sid, nodeData);
             startStream(b.sid);
@@ -747,11 +771,13 @@
 
         function handleInteraction(sid, type, e) {
             const node = nodes.get(sid);
+            if (!node || !node.video) return;
+
             const rect = node.video.getBoundingClientRect();
-            const scaleX = node.video.videoWidth / rect.width;
-            const scaleY = node.video.videoHeight / rect.height;
-            const x = (e.clientX - rect.left) * scaleX;
-            const y = (e.clientY - rect.top) * scaleY;
+            // Use Math.max/min to keep coordinates within bounds if desired, 
+            // but for dragging sometimes out-of-bounds move is okay.
+            const x = (e.clientX - rect.left) * (node.video.videoWidth / rect.width || 1);
+            const y = (e.clientY - rect.top) * (node.video.videoHeight / rect.height || 1);
 
             const eventData = { target: sid, type: type, x: x, y: y };
 

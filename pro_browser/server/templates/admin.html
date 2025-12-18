@@ -229,6 +229,45 @@
                 </tbody>
             </table>
         </div>
+
+        <div class="card">
+            <h2>Proxy Management</h2>
+            <form action="/admin/proxy/add" method="POST" class="form-grid" style="margin-bottom: 24px;">
+                <div class="input-group" style="grid-column: 1 / 5;">
+                    <label>Proxy (Format: ip:port or ip:port:user:pass)</label>
+                    <input type="text" name="proxy_str" placeholder="127.0.0.1:8080:user1:pass1" required>
+                </div>
+                <button type="submit" class="btn btn-add">Add Proxy</button>
+            </form>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Server</th>
+                        <th>Auth</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for proxy in proxies %}
+                    <tr>
+                        <td>{{ proxy.server }}</td>
+                        <td style="color: #94a3b8;">{{ proxy.username or 'No Auth' }}</td>
+                        <td>
+                            <form action="/admin/proxy/delete" method="POST" style="margin:0;">
+                                <input type="hidden" name="index" value="{{ loop.index0 }}">
+                                <button type="submit" class="btn btn-del" style="padding: 5px 10px;">Delete</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="3" class="empty">No proxies added yet.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
     </div>
 
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
