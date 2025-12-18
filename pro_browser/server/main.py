@@ -186,7 +186,7 @@ async def admin_delete_user():
 
 async def try_assign_nodes(username):
     """Attempt to assign free nodes to a user up to their limit via leases."""
-    if not username: return
+    if not username or username == 'admin': return
     
     async with allocation_lock:
         db = load_users()
@@ -453,6 +453,51 @@ async def control_event(sid, data):
                 await sio.emit('control_event', node_data, room=t)
         else:
             await sio.emit('control_event', data, room=targets)
+
+# --- Admin Management Tools ---
+
+@sio.on('admin_restart_all')
+async def admin_restart_all(sid, data):
+    if sid_to_user.get(sid) != 'admin': return
+    logger.info("Admin triggered global browser restart")
+    await sio.emit('restart_browser', {}, room='all_nodes') # Note: browsers should join 'all_nodes'
+    # Fallback to individual emits if room not joined
+    for b_sid in list(browsers.keys()):
+        await sio.emit('restart_browser', {}, room=b_sid)
+    await asyncio.sleep(0.5)
+    await broadcast_to_all_users()
+
+@sio.on('admin_restart_node')
+async def admin_restart_node(sid, data):
+    if sid_to_user.get(sid) != 'admin': return
+    target = data.get('target')
+    if target in browsers:
+        logger.info(f"Admin triggered restart for node {browsers[target]['id']}")
+        await sio.emit('restart_browser', {}, room=target)
+
+@sio.on('admin_kick_user')
+async def admin_kick_user(sid, data):
+    if sid_to_user.get(sid) != 'admin': return
+    target_user = data.get('username')
+    if not target_user or target_user == 'admin': return
+    
+    logger.info(f"Admin kicking user: {target_user}")
+    
+    async with allocation_lock:
+        # Clear leases
+        expired_leases = [nid for nid, uname in node_leases.items() if uname == target_user]
+        for nid in expired_leases:
+            del node_leases[nid]
+        
+        # Clear in_use_by
+        for b_sid, b_data in browsers.items():
+            if b_data.get('in_use_by') == target_user:
+                b_data['in_use_by'] = None
+                b_data['assigned_at'] = None
+    
+    await sio.emit('access_revoked', {}, room=f"user_{target_user}")
+    await reassign_freed_nodes()
+    await broadcast_to_all_users()
 
 if __name__ == '__main__':
     import uvicorn

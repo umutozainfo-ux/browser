@@ -111,6 +111,11 @@
             color: #fff;
         }
 
+        .btn-kick {
+            background: #f59e0b;
+            color: #fff;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
@@ -206,10 +211,14 @@
                         </td>
                         <td style="color: #94a3b8;">{{ user.expires_at_human }}</td>
                         <td>
-                            <form action="/admin/delete" method="POST" style="margin:0;">
-                                <input type="hidden" name="username" value="{{ name }}">
-                                <button type="submit" class="btn btn-del" style="padding: 5px 10px;">Delete</button>
-                            </form>
+                            <div style="display: flex; gap: 5px;">
+                                <button onclick="kickUser('{{ name }}')" class="btn btn-kick"
+                                    style="padding: 5px 10px;">Disconnect</button>
+                                <form action="/admin/delete" method="POST" style="margin:0;">
+                                    <input type="hidden" name="username" value="{{ name }}">
+                                    <button type="submit" class="btn btn-del" style="padding: 5px 10px;">Delete</button>
+                                </form>
+                            </div>
                         </td>
                     </tr>
                     {% else %}
@@ -252,10 +261,13 @@
                     </td>
                     <td style="color: #94a3b8;">${user.expires_at_human}</td>
                     <td>
-                        <form action="/admin/delete" method="POST" style="margin:0;">
-                            <input type="hidden" name="username" value="${name}">
-                            <button type="submit" class="btn btn-del" style="padding: 5px 10px;">Delete</button>
-                        </form>
+                        <div style="display: flex; gap: 5px;">
+                            <button onclick="kickUser('${name}')" class="btn btn-kick" style="padding: 5px 10px;">Disconnect</button>
+                            <form action="/admin/delete" method="POST" style="margin:0;">
+                                <input type="hidden" name="username" value="${name}">
+                                <button type="submit" class="btn btn-del" style="padding: 5px 10px;">Delete</button>
+                            </form>
+                        </div>
                     </td>
                 `;
                 tbody.appendChild(tr);
@@ -264,6 +276,12 @@
                 tbody.innerHTML = '<tr><td colspan="4" class="empty">No users created yet.</td></tr>';
             }
         });
+
+        function kickUser(username) {
+            if (confirm(`Force disconnect all nodes for user ${username}?`)) {
+                socket.emit('admin_kick_user', { username: username });
+            }
+        }
     </script>
 </body>
 
