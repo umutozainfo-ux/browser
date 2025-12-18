@@ -303,6 +303,101 @@
             padding: 4px 8px;
             outline: none;
         }
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        /* Status Console Styling */
+        #status-sidebar {
+            width: 300px;
+            background: var(--header-bg);
+            border-left: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            font-size: 12px;
+            overflow: hidden;
+            backdrop-filter: blur(12px);
+        }
+
+        .console-header {
+            padding: 12px 16px;
+            background: rgba(255, 255, 255, 0.05);
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--accent);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        #console-log {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .log-entry {
+            padding: 6px 10px;
+            border-radius: 4px;
+            background: rgba(0, 0, 0, 0.2);
+            border-left: 2px solid var(--accent);
+            animation: fadeIn 0.3s ease-out;
+        }
+
+        .log-entry.error {
+            border-left-color: #ef4444;
+            color: #fca5a5;
+        }
+
+        .log-entry.success {
+            border-left-color: var(--success);
+            color: #86efac;
+        }
+
+        .log-entry.info {
+            border-left-color: var(--accent);
+        }
+
+        .log-time {
+            opacity: 0.4;
+            margin-right: 8px;
+            font-size: 10px;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateX(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        .lease-indicator {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: rgba(34, 197, 94, 0.2);
+            color: var(--success);
+            font-weight: 600;
+        }
+
+        #main-layout {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
     </style>
 </head>
 
@@ -312,7 +407,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
             </svg>
-            GRID CONTROL
+            GRID CONTROL <span style="font-size: 10px; opacity: 0.5; margin-left: 5px; letter-spacing: 2px;">PRO</span>
         </div>
 
         <div id="main-controls">
@@ -324,17 +419,53 @@
         </div>
 
         <div id="stats">
-            <div class="stat-item">
-                <div class="dot active" id="socket-dot"></div> <span id="socket-status">Socket: Connected</span>
+            <div class="user-info"
+                style="margin-right: 20px; display: flex; gap: 15px; font-size: 13px; align-items: center; border-right: 1px solid var(--border); padding-right: 20px;">
+                <div style="display: flex; flex-direction: column; align-items: flex-end;">
+                    <span
+                        style="color: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: 1px;">{{
+                        user }}</span>
+                    <span style="color: var(--text-secondary); font-size: 10px;">{{ nodes_limit }} NODES
+                        ALLOCATED</span>
+                </div>
+                <div id="countdown"
+                    style="background: rgba(56, 189, 248, 0.1); color: var(--accent); padding: 6px 14px; border-radius: 8px; font-weight: 800; border: 1px solid rgba(56, 189, 248, 0.3); font-family: monospace; font-size: 15px; box-shadow: 0 0 10px rgba(56, 189, 248, 0.1);">
+                    --:--
+                </div>
             </div>
-            <div class="stat-item">
-                <div class="dot" id="stream-dot"></div> <span id="nodes-count">Nodes: 0</span>
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <div class="stat-item">
+                    <div class="dot active" id="socket-dot"></div> <span id="socket-status"
+                        style="font-size: 11px;">READY</span>
+                </div>
+                <div class="stat-item">
+                    <div class="dot" id="stream-dot"></div> <span id="nodes-count" style="font-size: 11px;">0
+                        active</span>
+                </div>
+                <a href="/logout" class="global-btn"
+                    style="background: rgba(239, 68, 68, 0.1); color: #ef4444; border-color: rgba(239, 68, 68, 0.2); text-decoration: none;">LOGOUT</a>
             </div>
         </div>
     </div>
 
-    <div id="grid-container">
-        <!-- Browser cards will be injected here -->
+    <div id="main-layout">
+        <div id="grid-container">
+            <!-- Browser cards will be injected here -->
+            <div id="no-nodes-msg"
+                style="display: none; grid-column: 1/-1; text-align: center; padding: 100px; color: var(--text-secondary); border: 1px dashed var(--border); border-radius: 12px; margin: 20px;">
+                <!-- Content injected via JS -->
+            </div>
+        </div>
+
+        <div id="status-sidebar">
+            <div class="console-header">
+                System Log
+                <span style="font-size: 8px; opacity: 0.5;">LIVE DIAGNOSTICS</span>
+            </div>
+            <div id="console-log">
+                <!-- Log entries will be injected here -->
+            </div>
+        </div>
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.js"></script>
@@ -343,24 +474,83 @@
         const nodes = new Map(); // sid -> nodeData object
         const grid = document.getElementById('grid-container');
         let masterSid = null;
+        const expiresAt = new Date("{{ expires_at }}");
+        const currentUser = "{{ user }}";
+
+        // Countdown Timer
+        function updateCountdown() {
+            const now = new Date();
+            const diff = expiresAt - now;
+            const el = document.getElementById('countdown');
+            if (diff <= 0) {
+                el.textContent = "Expired";
+                window.location.href = '/logout'; // Secure session termination
+                return;
+            }
+            const hours = Math.floor(diff / 3600000);
+            const minutes = Math.floor((diff % 3600000) / 60000);
+            const seconds = Math.floor((diff % 60000) / 1000);
+            el.textContent = `${hours}h ${minutes}m ${seconds}s`;
+        }
+        setInterval(updateCountdown, 1000);
+        updateCountdown();
 
         socket.on('connect', () => {
             document.getElementById('socket-dot').classList.add('active');
             document.getElementById('socket-status').textContent = 'Socket: Connected';
+            // Identify user for filtered node list
+            socket.emit('set_user', { username: currentUser });
         });
 
-        socket.on('disconnect', () => {
-            document.getElementById('socket-dot').classList.remove('active');
-            document.getElementById('socket-status').textContent = 'Socket: Disconnected';
+        socket.on('access_revoked', () => {
+            alert('Your access has been revoked by admin.');
+            window.location.href = '/logout';
         });
 
-        socket.on('browser_list_update', (browserList) => {
-            updateGrid(browserList);
+        socket.on('config_update', (data) => {
+            alert('Your node limit has been updated. Refreshing...');
+            window.location.reload();
         });
 
-        function updateGrid(browserList) {
-            document.getElementById('nodes-count').textContent = `Nodes: ${browserList.length}`;
-            
+        socket.on('browser_list_update', (data) => {
+            updateGrid(data.nodes, data.waiting_count, data.limit);
+        });
+
+        function updateGrid(browserList, waitingCount, limit) {
+            const countEl = document.getElementById('nodes-count');
+            const msgEl = document.getElementById('no-nodes-msg');
+            const userNodesText = document.querySelector('.user-info span:last-child');
+
+            if (userNodesText) {
+                userNodesText.textContent = `${limit} NODES ALLOCATED`;
+            }
+
+            if (countEl) countEl.textContent = `${browserList.length} active`;
+
+            // Handling the "Waiting" and "No Nodes" messages
+            if (browserList.length === 0 && waitingCount === 0) {
+                msgEl.style.display = 'block';
+                msgEl.innerHTML = `
+                    <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.5" style="margin-bottom: 20px; opacity: 0.3;">
+                        <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z" />
+                        <path d="M7.5 4.21l4.5 2.6 4.5-2.6m-9 15.58V14.6L3 12m18 0l-4.5 2.6v5.19M3.27 6.96L12 12.01l8.73-5.05" />
+                    </svg>
+                    <h2 style="color: var(--text-primary); margin-bottom: 10px;">Zero Nodes Assigned</h2>
+                    <p>You don't have any browser nodes assigned to your account yet.</p>
+                `;
+            } else if (waitingCount > 0) {
+                msgEl.style.display = 'block';
+                msgEl.innerHTML = `
+                    <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); padding: 20px; border-radius: 12px; display: inline-block;">
+                        <div class="spinner" style="width: 24px; height: 24px; border: 3px solid rgba(245, 158, 11, 0.3); border-top-color: var(--warning); border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 15px;"></div>
+                        <h2 style="color: var(--warning); margin-bottom: 10px;">Waiting for Nodes</h2>
+                        <p>You are waiting for <b>${waitingCount}</b> more nodes to become available.</p>
+                    </div>
+                `;
+            } else {
+                msgEl.style.display = 'none';
+            }
+
             // Remove nodes that are gone
             const currentSids = new Set(browserList.map(b => b.sid));
             for (const [sid, node] of nodes) {
@@ -370,7 +560,7 @@
                 }
             }
 
-            // Add or update nodes
+            // Add or update nodes (browsers already assigned to this user)
             browserList.forEach(b => {
                 if (!nodes.has(b.sid)) {
                     createNewNodeCard(b);
@@ -385,6 +575,7 @@
             card.innerHTML = `
                 <div class="card-header">
                     <div class="master-badge">Master</div>
+                    <div class="lease-indicator">LEASED</div>
                     <div class="browser-id">${b.id}</div>
                     <div class="card-actions">
                         <button class="icon-btn" onclick="toggleMaster('${b.sid}')" title="Set as Master">
@@ -411,13 +602,14 @@
                 </div>
             `;
             grid.appendChild(card);
+            log(`Node ${b.id} initialized and stream started`, 'success');
 
             const nodeData = {
                 sid: b.sid,
                 pc: null,
                 isSync: false,
                 video: card.querySelector('video'),
-                destroy: function() {
+                destroy: function () {
                     if (this.pc) this.pc.close();
                     card.remove();
                 }
@@ -454,7 +646,7 @@
             const offer = await node.pc.createOffer();
             await node.pc.setLocalDescription(offer);
 
-            socket.emit('offer', { target: sid, sdp: offer.sdp, type: offer.type });
+            socket.emit('offer', { target: sid, sdp: offer.sdp, type: offer.type, username: currentUser });
         }
 
         socket.on('answer', async (data) => {
@@ -507,7 +699,7 @@
         function navigate(sid, type) {
             const urlInp = document.getElementById(`url-${sid}`);
             let url = urlInp ? urlInp.value : '';
-            
+
             const eventData = { target: sid, type: type === 'goto' ? 'navigate' : type };
             if (type === 'goto') eventData.url = url;
 
@@ -550,13 +742,34 @@
             const syncTargets = Array.from(nodes.values())
                 .filter(n => n.isSync)
                 .map(n => n.sid);
-            
-            socket.emit('control_event', { 
-                target: syncTargets, 
-                type: 'keydown', 
-                key: e.key 
+
+            socket.emit('control_event', {
+                target: syncTargets,
+                type: 'keydown',
+                key: e.key
             });
         });
+        socket.on('control_status', (data) => {
+            log(data.msg, data.type === 'error' ? 'error' : 'info');
+        });
+
+        function log(msg, type = 'info') {
+            const consoleLog = document.getElementById('console-log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+            entry.innerHTML = `<span class="log-time">[${time}]</span> ${msg}`;
+            consoleLog.prepend(entry);
+
+            // Keep status console clean
+            if (consoleLog.children.length > 50) {
+                consoleLog.removeChild(consoleLog.lastChild);
+            }
+        }
+
+        // Initial Log
+        log('System initialized. Waiting for node connection...', 'info');
     </script>
 </body>
+
 </html>

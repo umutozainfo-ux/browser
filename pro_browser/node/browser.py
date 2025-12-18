@@ -8,6 +8,7 @@ from playwright.async_api import async_playwright
 import numpy as np
 from av import VideoFrame
 
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger("Browser")
 
 class BrowserManager:
@@ -21,101 +22,123 @@ class BrowserManager:
         self.running = False
         self.width = 1280
         self.height = 720
+        self.lock = asyncio.Lock()
 
     async def start(self):
-        logger.info("Starting Browser...")
-        self.playwright = await async_playwright().start()
-        # Launch options for performance and stealth
-        self.browser = await self.playwright.chromium.launch(
-            headless=True, # Headless=False is better for stealth usually, but we can try True for docker
-            args=[
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-infobars',
-                '--window-size=1280,720',
-                '--disable-blink-features=AutomationControlled'
-            ]
-        )
-        self.context = await self.browser.new_context(
-            viewport={'width': self.width, 'height': self.height},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        )
-        
-        # Apply Stealth
-        from stealth import STEALTH_SCRIPTS
-        for script in STEALTH_SCRIPTS:
-            await self.context.add_init_script(script)
+        logger.info("Wait for lock to START browser...")
+        async with self.lock:
+            if self.running: 
+                logger.info("Browser already running.")
+                return
+            logger.info("Acquired lock. Starting Browser...")
+            try:
+                logger.info("Initializing Playwright...")
+                self.playwright = await async_playwright().start()
+                
+                logger.info("Launching Chromium...")
+                self.browser = await self.playwright.chromium.launch(
+                    headless=True,
+                    args=[
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-infobars',
+                        '--window-size=1280,720',
+                        '--disable-blink-features=AutomationControlled'
+                    ]
+                )
+                
+                logger.info("Creating Context & Stealthing...")
+                self.context = await self.browser.new_context(
+                    viewport={'width': self.width, 'height': self.height},
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                )
+                from stealth import STEALTH_SCRIPTS
+                for script in STEALTH_SCRIPTS:
+                    await self.context.add_init_script(script)
 
-        self.page = await self.context.new_page()
-        self.cdp = await self.context.new_cdp_session(self.page)
-        
-        await self.start_screencast()
-        await self.page.goto('https://www.google.com')
-        self.running = True
+                logger.info("Opening Page...")
+                self.page = await self.context.new_page()
+                self.cdp = await self.context.new_cdp_session(self.page)
+                
+                logger.info("Navigating to initial page...")
+                await self.page.goto('https://www.google.com', wait_until="domcontentloaded", timeout=20000)
+                
+                await self.start_screencast()
+                
+                self.running = True
+                logger.info("Browser started successfully.")
+            except Exception as e:
+                logger.error(f"Failed to start browser: {e}")
+                await self._cleanup()
+        logger.info("Released lock after START attempt.")
 
     async def start_screencast(self):
         """Start CDP Screencast for high FPS"""
-        await self.cdp.send('Page.startScreencast', {
-            'format': 'jpeg',
-            'quality': 60,
-            'maxWidth': self.width,
-            'maxHeight': self.height,
-            'everyNthFrame': 1
-        })
-        self.cdp.on('Page.screencastFrame', self._on_screencast_frame)
+        if not self.cdp: return
+        try:
+            logger.info("Enabling CDP Page domain...")
+            await self.cdp.send('Page.enable')
+            
+            logger.info("Starting CDP Screencast...")
+            await self.cdp.send('Page.startScreencast', {
+                'format': 'jpeg',
+                'quality': 60,
+                'maxWidth': self.width,
+                'maxHeight': self.height,
+                'everyNthFrame': 1
+            })
+            self.cdp.on('Page.screencastFrame', self._on_screencast_frame)
+            logger.info("CDP Screencast started successfully.")
+        except Exception as e:
+            logger.error(f"Error starting screencast: {e}")
 
     def is_healthy(self) -> bool:
-        """Check if the browser and page are still responsive"""
-        if not self.running:
+        if not self.running: return False
+        try:
+            return self.browser and self.browser.is_connected()
+        except:
             return False
-        if not self.browser or not self.page:
-            return False
-        # Basic check: is the browser connected?
-        if not self.browser.is_connected():
-            return False
-        return True
 
     def _on_screencast_frame(self, data):
-        """Handle incoming CDP frame"""
+        """Handle incoming CDP frame with EPIPE protection"""
+        if not self.running or not self.cdp: return
         try:
-            # data['data'] is base64 encoded jpeg
-            # We need to acknowledge the frame to keep the stream flowing
-            asyncio.create_task(self.cdp.send('Page.screencastFrameAck', {'sessionId': data['sessionId']}))
+            asyncio.create_task(self._safe_ack(data.get('sessionId')))
+            if not data.get('data'): return
             
-            # Decode JPEG to AV VideoFrame
-            # This is CPU intensive, might want to optimize
-            if not data.get('data'):
-                logger.warning("Received empty screencast frame data")
-                return
+            # Log every 100th frame instead of every frame
+            if not hasattr(self, '_frame_count'): self._frame_count = 0
+            self._frame_count += 1
+            if self._frame_count % 100 == 1:
+                logger.info(f"Screencast frame received ({self._frame_count})")
 
             image_data = base64.b64decode(data['data'])
-            
-            # Use PyAV or OpenCV to convert to frame
-            # For simplicity in aiortc, we construct a VideoFrame from numpy array
             import cv2
             nparr = np.frombuffer(image_data, np.uint8)
             img_np = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
-            # Convert BGR to RGB (OpenCV uses BGR)
+            if img_np is None: return
             img_rgb = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB)
-            
             frame = VideoFrame.from_ndarray(img_rgb, format='rgb24')
-            # Use standard time base
             from fractions import Fraction
             frame.pts = int(time.time() * 90000)
             frame.time_base = Fraction(1, 90000)
             self.last_frame = frame
-            
         except Exception as e:
-            logger.error(f"Frame handling error: {e}")
+            if "EPIPE" not in str(e):
+                logger.error(f"Frame handling error: {e}", exc_info=True)
+
+    async def _safe_ack(self, session_id):
+        if not self.running or not self.cdp or not session_id: return
+        try:
+            await self.cdp.send('Page.screencastFrameAck', {'sessionId': session_id})
+        except:
+            pass
 
     async def get_latest_frame(self) -> Optional[VideoFrame]:
         return self.last_frame
 
-    # Input Handling
     async def handle_input(self, event):
-        if not self.page: return
-        
+        if not self.running or not self.page: return
         try:
             type = event.get('type')
             if type == 'mousemove':
@@ -129,11 +152,11 @@ class BrowserManager:
             elif type == 'navigate':
                 await self.navigate_to(event.get('url'))
             elif type == 'back':
-                await self.go_back()
+                await self.page.go_back()
             elif type == 'forward':
-                await self.go_forward()
+                await self.page.go_forward()
             elif type == 'reload':
-                await self.reload()
+                await self.page.reload()
         except Exception as e:
             logger.error(f"Input error: {e}", exc_info=True)
 
@@ -142,51 +165,43 @@ class BrowserManager:
         try:
             if not url.startswith(('http://', 'https://')):
                 url = 'https://' + url
-            logger.info(f"Navigating to: {url}")
-            await self.page.goto(url)
+            await self.page.goto(url, wait_until="domcontentloaded", timeout=10000)
         except Exception as e:
             logger.error(f"Navigation error: {e}")
 
-    async def go_back(self):
-        if not self.page: return
-        try:
-            logger.info("Navigating back")
-            await self.page.go_back()
-        except Exception as e:
-            logger.error(f"Back navigation error: {e}")
-
-    async def go_forward(self):
-        if not self.page: return
-        try:
-            logger.info("Navigating forward")
-            await self.page.go_forward()
-        except Exception as e:
-            logger.error(f"Forward navigation error: {e}")
-
-    async def reload(self):
-        if not self.page: return
-        try:
-            logger.info("Reloading page")
-            await self.page.reload()
-        except Exception as e:
-            logger.error(f"Reload error: {e}")
-
-    async def close(self):
-        logger.info("Closing Browser...")
+    async def _cleanup(self):
+        """Internal cleanup without locking to avoid deadlocks"""
+        logger.info("Cleaning up browser resources...")
         self.running = False
         try:
+            if self.cdp:
+                try: await self.cdp.detach()
+                except: pass
             if self.page:
-                await self.page.close()
+                try: await self.page.close()
+                except: pass
             if self.context:
-                await self.context.close()
+                try: await self.context.close()
+                except: pass
             if self.browser:
-                await self.browser.close()
+                try: await self.browser.close()
+                except: pass
             if self.playwright:
-                await self.playwright.stop()
+                try: await self.playwright.stop()
+                except: pass
         except Exception as e:
-            logger.error(f"Error during browser cleanup: {e}")
+            logger.error(f"Error during internal cleanup: {e}")
         finally:
             self.page = None
             self.context = None
             self.browser = None
             self.playwright = None
+            self.cdp = None
+            self.last_frame = None
+
+    async def close(self):
+        logger.info("Wait for lock to CLOSE browser...")
+        async with self.lock:
+            logger.info("Acquired lock for CLOSE.")
+            await self._cleanup()
+        logger.info("Released lock after CLOSE.")
