@@ -27,7 +27,7 @@ async def disconnect(sid):
     if sid in browsers:
         del browsers[sid]
         # Notify controllers that a browser left
-        await sio.emit('browser_list_update', list(browsers.keys()))
+        await sio.emit('browser_list_update', list(browsers.values()))
 
 @sio.event
 async def register_browser(sid, data):
@@ -35,7 +35,7 @@ async def register_browser(sid, data):
     browser_id = data.get('id', sid)
     browsers[sid] = {'id': browser_id, 'sid': sid}
     logger.info(f"Browser registered: {browser_id} (SID: {sid})")
-    await sio.emit('browser_list_update', list(browsers.keys()))
+    await sio.emit('browser_list_update', list(browsers.values()))
 
 @sio.event
 async def offer(sid, data):
@@ -61,10 +61,14 @@ async def ice_candidate(sid, data):
 # Control events
 @sio.event
 async def control_event(sid, data):
-    """Relay control input (mouse/keyboard) to target browser"""
-    target = data.get('target')
-    if target:
-        await sio.emit('control_event', data, room=target)
+    """Relay control input (mouse/keyboard) to target browser(s)"""
+    targets = data.get('target')
+    if targets:
+        if isinstance(targets, list):
+            for t in targets:
+                await sio.emit('control_event', data, room=t)
+        else:
+            await sio.emit('control_event', data, room=targets)
 
 if __name__ == '__main__':
     import uvicorn

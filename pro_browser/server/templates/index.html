@@ -1,114 +1,561 @@
 <!DOCTYPE html>
 <html>
+
 <head>
-    <title>Pro Browser Stream</title>
+    <title>Pro Browser | Control Center</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        body { margin: 0; background: #000; color: #fff; font-family: sans-serif; display: flex; flex-direction: column; height: 100vh; }
-        #controls { padding: 10px; background: #222; display: flex; gap: 10px; }
-        #video-container { flex: 1; display: flex; justify-content: center; align-items: center; position: relative; }
-        video { max-width: 100%; max-height: 100%; box-shadow: 0 0 20px rgba(255,255,255,0.1); }
-        .status { font-size: 12px; color: #888; margin-left: auto; }
+        :root {
+            --bg-dark: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --header-bg: rgba(15, 23, 42, 0.9);
+            --accent: #38bdf8;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --border: rgba(255, 255, 255, 0.1);
+            --success: #22c55e;
+            --warning: #f59e0b;
+        }
+
+        body {
+            margin: 0;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            font-family: 'Inter', sans-serif;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        #header {
+            padding: 16px 24px;
+            background: var(--header-bg);
+            backdrop-filter: blur(12px);
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            border-bottom: 1px solid var(--border);
+            z-index: 100;
+        }
+
+        .logo {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--accent);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .logo svg {
+            width: 24px;
+            height: 24px;
+        }
+
+        #main-controls {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-right: auto;
+        }
+
+        .global-btn {
+            background: #334155;
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .global-btn:hover {
+            background: #475569;
+        }
+
+        .global-btn.auto-connect {
+            background: #0284c7;
+        }
+
+        .global-btn.auto-connect:hover {
+            background: #0369a1;
+        }
+
+        #stats {
+            font-size: 12px;
+            color: var(--text-secondary);
+            display: flex;
+            gap: 15px;
+        }
+
+        .stat-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #64748b;
+        }
+
+        .dot.active {
+            background: var(--success);
+        }
+
+        #grid-container {
+            flex: 1;
+            padding: 20px;
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            grid-auto-rows: min-content;
+            gap: 20px;
+            overflow-y: auto;
+            background: radial-gradient(circle at center, #1e293b 0%, #0f172a 100%);
+        }
+
+        .browser-card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            transition: transform 0.2s, box-shadow 0.2s;
+            position: relative;
+        }
+
+        .browser-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            border-color: rgba(56, 189, 248, 0.3);
+        }
+
+        .card-header {
+            padding: 10px 15px;
+            background: rgba(0, 0, 0, 0.3);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .browser-id {
+            font-size: 13px;
+            font-weight: 600;
+            flex: 1;
+        }
+
+        .card-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .icon-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-secondary);
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 4px;
+            display: flex;
+            transition: all 0.2s;
+        }
+
+        .icon-btn:hover {
+            color: var(--text-primary);
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .icon-btn.active {
+            color: var(--accent);
+            background: rgba(56, 189, 248, 0.1);
+        }
+
+        .icon-btn svg {
+            width: 18px;
+            height: 18px;
+            fill: currentColor;
+        }
+
+        .video-wrapper {
+            aspect-ratio: 16/9;
+            background: #000;
+            position: relative;
+            cursor: crosshair;
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .card-footer {
+            padding: 8px 15px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            background: rgba(0, 0, 0, 0.2);
+        }
+
+        .sync-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .toggle-switch {
+            width: 32px;
+            height: 18px;
+            background: #334155;
+            border-radius: 10px;
+            position: relative;
+            transition: background 0.3s;
+        }
+
+        .toggle-switch::after {
+            content: "";
+            position: absolute;
+            left: 2px;
+            top: 2px;
+            width: 14px;
+            height: 14px;
+            background: #fff;
+            border-radius: 50%;
+            transition: transform 0.3s;
+        }
+
+        .sync-active .toggle-switch {
+            background: var(--success);
+        }
+
+        .sync-active .toggle-switch::after {
+            transform: translateX(14px);
+        }
+
+        .master-badge {
+            font-size: 10px;
+            text-transform: uppercase;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: var(--accent);
+            color: var(--bg-dark);
+            font-weight: 800;
+            display: none;
+        }
+
+        .is-master .master-badge {
+            display: block;
+        }
+
+        .is-master {
+            border-color: var(--accent) !important;
+            box-shadow: 0 0 15px rgba(56, 189, 248, 0.2);
+        }
+
+        /* Custom Scrollbar */
+        #grid-container::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        #grid-container::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        #grid-container::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        #grid-container::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .nav-bar {
+            padding: 8px 12px;
+            background: rgba(15, 23, 42, 0.5);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .nav-input {
+            flex: 1;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            color: #fff;
+            font-size: 12px;
+            padding: 4px 8px;
+            outline: none;
+        }
     </style>
 </head>
+
 <body>
-    <div id="controls">
-        <select id="browserList"><option value="">Select Browser...</option></select>
-        <button onclick="startStream()">Connect</button>
-        <div class="status" id="status">Disconnected</div>
+    <div id="header">
+        <div class="logo">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+            </svg>
+            GRID CONTROL
+        </div>
+
+        <div id="main-controls">
+            <button class="global-btn auto-connect" onclick="connectAll()">
+                Connect All
+            </button>
+            <button class="global-btn" onclick="syncAll(true)">Sync All</button>
+            <button class="global-btn" onclick="syncAll(false)">Deselect All</button>
+        </div>
+
+        <div id="stats">
+            <div class="stat-item">
+                <div class="dot active" id="socket-dot"></div> <span id="socket-status">Socket: Connected</span>
+            </div>
+            <div class="stat-item">
+                <div class="dot" id="stream-dot"></div> <span id="nodes-count">Nodes: 0</span>
+            </div>
+        </div>
     </div>
-    <div id="video-container">
-        <video id="remoteVideo" autoplay playsinline muted></video>
+
+    <div id="grid-container">
+        <!-- Browser cards will be injected here -->
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.js"></script>
     <script>
         const socket = io();
-        let peerConnection;
-        let ptarget = null;
-        
-        const video = document.getElementById('remoteVideo');
-        const status = document.getElementById('status');
-        const browserList = document.getElementById('browserList');
+        const nodes = new Map(); // sid -> nodeData object
+        const grid = document.getElementById('grid-container');
+        let masterSid = null;
 
         socket.on('connect', () => {
-            status.textContent = 'Socket Connected';
+            document.getElementById('socket-dot').classList.add('active');
+            document.getElementById('socket-status').textContent = 'Socket: Connected';
         });
 
-        socket.on('browser_list_update', (browsers) => {
-            browserList.innerHTML = '<option value="">Select Browser...</option>';
-            browsers.forEach(id => {
-                const opt = document.createElement('option');
-                opt.value = id;
-                opt.textContent = id;
-                browserList.appendChild(opt);
-            });
+        socket.on('disconnect', () => {
+            document.getElementById('socket-dot').classList.remove('active');
+            document.getElementById('socket-status').textContent = 'Socket: Disconnected';
         });
 
-        async function startStream() {
-            const target = browserList.value;
-            if (!target) return;
-            ptarget = target;
+        socket.on('browser_list_update', (browserList) => {
+            updateGrid(browserList);
+        });
+
+        function updateGrid(browserList) {
+            document.getElementById('nodes-count').textContent = `Nodes: ${browserList.length}`;
             
-            peerConnection = new RTCPeerConnection({
-                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            // Remove nodes that are gone
+            const currentSids = new Set(browserList.map(b => b.sid));
+            for (const [sid, node] of nodes) {
+                if (!currentSids.has(sid)) {
+                    node.destroy();
+                    nodes.delete(sid);
+                }
+            }
+
+            // Add or update nodes
+            browserList.forEach(b => {
+                if (!nodes.has(b.sid)) {
+                    createNewNodeCard(b);
+                }
             });
+        }
 
-            peerConnection.ontrack = (event) => {
-                video.srcObject = event.streams[0];
-                status.textContent = 'Streaming...';
-            };
+        function createNewNodeCard(b) {
+            const card = document.createElement('div');
+            card.className = 'browser-card';
+            card.id = `card-${b.sid}`;
+            card.innerHTML = `
+                <div class="card-header">
+                    <div class="master-badge">Master</div>
+                    <div class="browser-id">${b.id}</div>
+                    <div class="card-actions">
+                        <button class="icon-btn" onclick="toggleMaster('${b.sid}')" title="Set as Master">
+                            <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+                        </button>
+                        <button class="icon-btn" onclick="startStream('${b.sid}')" title="Reconnect">
+                            <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="nav-bar">
+                    <button class="icon-btn" onclick="navigate('${b.sid}', 'back')"><svg viewBox="0 0 24 24"><path d="M15.41 16.59L10.83 12l4.58-4.59L14 6l-6 6 6 6 1.41-1.41z"/></svg></button>
+                    <button class="icon-btn" onclick="navigate('${b.sid}', 'forward')"><svg viewBox="0 0 24 24"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/></svg></button>
+                    <input type="text" class="nav-input" id="url-${b.sid}" placeholder="Enter URL..." onkeydown="if(event.key==='Enter') navigate('${b.sid}', 'goto')">
+                </div>
+                <div class="video-wrapper">
+                    <video id="video-${b.sid}" autoplay playsinline muted></video>
+                </div>
+                <div class="card-footer">
+                    <div class="sync-toggle" id="sync-${b.sid}" onclick="toggleSync('${b.sid}')">
+                        <div class="toggle-switch"></div>
+                        <span>Sync Control</span>
+                    </div>
+                </div>
+            `;
+            grid.appendChild(card);
 
-            peerConnection.onicecandidate = (event) => {
-                if (event.candidate) {
-                    socket.emit('ice_candidate', { target: ptarget, candidate: event.candidate });
+            const nodeData = {
+                sid: b.sid,
+                pc: null,
+                isSync: false,
+                video: card.querySelector('video'),
+                destroy: function() {
+                    if (this.pc) this.pc.close();
+                    card.remove();
                 }
             };
 
-            // Create Offer
-            peerConnection.addTransceiver('video', { direction: 'recvonly' });
-            const offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
+            // Event Listeners for Interaction
+            nodeData.video.addEventListener('mousemove', (e) => handleInteraction(b.sid, 'mousemove', e));
+            nodeData.video.addEventListener('mousedown', (e) => handleInteraction(b.sid, 'mousedown', e));
+            nodeData.video.addEventListener('mouseup', (e) => handleInteraction(b.sid, 'mouseup', e));
 
-            socket.emit('offer', { target: ptarget, sdp: offer.sdp, type: offer.type });
-            status.textContent = 'Offer sent...';
+            nodes.set(b.sid, nodeData);
+            startStream(b.sid);
+        }
+
+        async function startStream(sid) {
+            const node = nodes.get(sid);
+            if (!node) return;
+            if (node.pc) node.pc.close();
+
+            node.pc = new RTCPeerConnection({
+                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            });
+
+            node.pc.ontrack = (e) => {
+                node.video.srcObject = e.streams[0];
+                document.getElementById('stream-dot').classList.add('active');
+            };
+
+            node.pc.onicecandidate = (e) => {
+                if (e.candidate) socket.emit('ice_candidate', { target: sid, candidate: e.candidate });
+            };
+
+            node.pc.addTransceiver('video', { direction: 'recvonly' });
+            const offer = await node.pc.createOffer();
+            await node.pc.setLocalDescription(offer);
+
+            socket.emit('offer', { target: sid, sdp: offer.sdp, type: offer.type });
         }
 
         socket.on('answer', async (data) => {
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(data));
+            const node = nodes.get(data.from);
+            if (node && node.pc) {
+                await node.pc.setRemoteDescription(new RTCSessionDescription(data));
+            }
         });
 
         socket.on('ice_candidate', async (data) => {
-            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+            const node = nodes.get(data.from);
+            if (node && node.pc) {
+                await node.pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+            }
         });
 
-        // Interactive Controls
-        video.addEventListener('mousemove', (e) => {
-            if(!ptarget) return;
-            const rect = video.getBoundingClientRect();
-            // Calculate scale in case video is resized
-            // Note: video.videoWidth is the actual resolution
-            const scaleX = video.videoWidth / rect.width;
-            const scaleY = video.videoHeight / rect.height;
+        function toggleMaster(sid) {
+            if (masterSid === sid) {
+                masterSid = null;
+                document.getElementById(`card-${sid}`).classList.remove('is-master');
+            } else {
+                if (masterSid) document.getElementById(`card-${masterSid}`).classList.remove('is-master');
+                masterSid = sid;
+                document.getElementById(`card-${sid}`).classList.add('is-master');
+                // Ensure Master is synced
+                if (!nodes.get(sid).isSync) toggleSync(sid);
+            }
+        }
+
+        function toggleSync(sid) {
+            const node = nodes.get(sid);
+            node.isSync = !node.isSync;
+            const el = document.getElementById(`sync-${sid}`);
+            if (node.isSync) el.classList.add('sync-active');
+            else el.classList.remove('sync-active');
+        }
+
+        function syncAll(val) {
+            for (const [sid, node] of nodes) {
+                if (node.isSync !== val) toggleSync(sid);
+            }
+        }
+
+        function connectAll() {
+            for (const sid of nodes.keys()) {
+                startStream(sid);
+            }
+        }
+
+        function navigate(sid, type) {
+            const urlInp = document.getElementById(`url-${sid}`);
+            let url = urlInp ? urlInp.value : '';
             
+            const eventData = { target: sid, type: type === 'goto' ? 'navigate' : type };
+            if (type === 'goto') eventData.url = url;
+
+            // Is this a broadcast from Master?
+            if (sid === masterSid) {
+                const syncTargets = Array.from(nodes.values())
+                    .filter(n => n.isSync)
+                    .map(n => n.sid);
+                eventData.target = syncTargets;
+            }
+
+            socket.emit('control_event', eventData);
+        }
+
+        function handleInteraction(sid, type, e) {
+            const node = nodes.get(sid);
+            const rect = node.video.getBoundingClientRect();
+            const scaleX = node.video.videoWidth / rect.width;
+            const scaleY = node.video.videoHeight / rect.height;
             const x = (e.clientX - rect.left) * scaleX;
             const y = (e.clientY - rect.top) * scaleY;
-            
-            socket.emit('control_event', { target: ptarget, type: 'mousemove', x: x, y: y });
-        });
 
-        video.addEventListener('mousedown', (e) => {
-             if(!ptarget) return;
-             socket.emit('control_event', { target: ptarget, type: 'mousedown' });
-        });
-        
-        video.addEventListener('mouseup', (e) => {
-             if(!ptarget) return;
-             socket.emit('control_event', { target: ptarget, type: 'mouseup' });
-        });
+            const eventData = { target: sid, type: type, x: x, y: y };
+
+            // Broadcast Logic
+            if (sid === masterSid) {
+                const syncTargets = Array.from(nodes.values())
+                    .filter(n => n.isSync)
+                    .map(n => n.sid);
+                eventData.target = syncTargets;
+            }
+
+            socket.emit('control_event', eventData);
+        }
 
         window.addEventListener('keydown', (e) => {
-            if(!ptarget) return;
-            socket.emit('control_event', { target: ptarget, type: 'keydown', key: e.key });
+            if (!masterSid) return;
+            if (document.activeElement.tagName === 'INPUT') return;
+
+            const syncTargets = Array.from(nodes.values())
+                .filter(n => n.isSync)
+                .map(n => n.sid);
+            
+            socket.emit('control_event', { 
+                target: syncTargets, 
+                type: 'keydown', 
+                key: e.key 
+            });
         });
     </script>
 </body>

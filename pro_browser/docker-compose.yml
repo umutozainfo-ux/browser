@@ -18,7 +18,7 @@ services:
       - browser-net
     # Scale this service to add more browsers (e.g., --scale node=5)
     deploy:
-      replicas: 1
+      replicas: 2
 
 networks:
   browser-net:

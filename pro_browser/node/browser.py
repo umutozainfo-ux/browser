@@ -27,7 +27,7 @@ class BrowserManager:
         self.playwright = await async_playwright().start()
         # Launch options for performance and stealth
         self.browser = await self.playwright.chromium.launch(
-            headless=False, # Headless=False is better for stealth usually, but we can try True for docker
+            headless=True, # Headless=False is better for stealth usually, but we can try True for docker
             args=[
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -64,6 +64,17 @@ class BrowserManager:
         })
         self.cdp.on('Page.screencastFrame', self._on_screencast_frame)
 
+    def is_healthy(self) -> bool:
+        """Check if the browser and page are still responsive"""
+        if not self.running:
+            return False
+        if not self.browser or not self.page:
+            return False
+        # Basic check: is the browser connected?
+        if not self.browser.is_connected():
+            return False
+        return True
+
     def _on_screencast_frame(self, data):
         """Handle incoming CDP frame"""
         try:
@@ -73,6 +84,10 @@ class BrowserManager:
             
             # Decode JPEG to AV VideoFrame
             # This is CPU intensive, might want to optimize
+            if not data.get('data'):
+                logger.warning("Received empty screencast frame data")
+                return
+
             image_data = base64.b64decode(data['data'])
             
             # Use PyAV or OpenCV to convert to frame
@@ -111,12 +126,67 @@ class BrowserManager:
                 await self.page.mouse.up()
             elif type == 'keydown':
                 await self.page.keyboard.press(event['key'])
+            elif type == 'navigate':
+                await self.navigate_to(event.get('url'))
+            elif type == 'back':
+                await self.go_back()
+            elif type == 'forward':
+                await self.go_forward()
+            elif type == 'reload':
+                await self.reload()
         except Exception as e:
-            logger.error(f"Input error: {e}")
+            logger.error(f"Input error: {e}", exc_info=True)
+
+    async def navigate_to(self, url: str):
+        if not self.page or not url: return
+        try:
+            if not url.startswith(('http://', 'https://')):
+                url = 'https://' + url
+            logger.info(f"Navigating to: {url}")
+            await self.page.goto(url)
+        except Exception as e:
+            logger.error(f"Navigation error: {e}")
+
+    async def go_back(self):
+        if not self.page: return
+        try:
+            logger.info("Navigating back")
+            await self.page.go_back()
+        except Exception as e:
+            logger.error(f"Back navigation error: {e}")
+
+    async def go_forward(self):
+        if not self.page: return
+        try:
+            logger.info("Navigating forward")
+            await self.page.go_forward()
+        except Exception as e:
+            logger.error(f"Forward navigation error: {e}")
+
+    async def reload(self):
+        if not self.page: return
+        try:
+            logger.info("Reloading page")
+            await self.page.reload()
+        except Exception as e:
+            logger.error(f"Reload error: {e}")
 
     async def close(self):
+        logger.info("Closing Browser...")
         self.running = False
-        if self.browser:
-            await self.browser.close()
-        if self.playwright:
-            await self.playwright.stop()
+        try:
+            if self.page:
+                await self.page.close()
+            if self.context:
+                await self.context.close()
+            if self.browser:
+                await self.browser.close()
+            if self.playwright:
+                await self.playwright.stop()
+        except Exception as e:
+            logger.error(f"Error during browser cleanup: {e}")
+        finally:
+            self.page = None
+            self.context = None
+            self.browser = None
+            self.playwright = None
