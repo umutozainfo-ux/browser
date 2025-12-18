@@ -150,8 +150,9 @@ class BrowserManager:
 
     async def handle_input(self, event):
         if not self.running or not self.page: return
-        try:
-            type = event.get('type')
+        async with self.input_lock:
+            try:
+                type = event.get('type')
             if type == 'mousemove':
                 await self.page.mouse.move(event['x'], event['y'])
             elif type == 'mousedown':
