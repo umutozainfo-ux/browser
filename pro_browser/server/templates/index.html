@@ -395,6 +395,55 @@
             font-weight: 600;
         }
 
+        .proxy-badge {
+            font-size: 9px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: rgba(56, 189, 248, 0.15);
+            color: var(--accent);
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .proxy-badge.direct {
+            background: rgba(100, 116, 139, 0.2);
+            color: #94a3b8;
+        }
+
+        .hold-indicator {
+            font-size: 9px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: rgba(251, 191, 36, 0.2);
+            color: #fbbf24;
+            font-weight: 700;
+            display: none;
+        }
+
+        .is-held .hold-indicator {
+            display: block;
+        }
+
+        .is-held {
+            border-color: #fbbf24 !important;
+            box-shadow: 0 0 15px rgba(251, 191, 36, 0.15);
+        }
+
+        .rtc-status {
+            font-size: 9px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: rgba(100, 116, 139, 0.2);
+            color: #94a3b8;
+        }
+
+        .rtc-status.connected {
+            background: rgba(34, 197, 94, 0.2);
+            color: var(--success);
+        }
+
         #main-layout {
             display: flex;
             flex: 1;
@@ -468,7 +517,11 @@
         <div id="status-sidebar">
             <div class="console-header">
                 System Log
-                <span style="font-size: 8px; opacity: 0.5;">LIVE DIAGNOSTICS</span>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <span style="font-size: 8px; opacity: 0.5; letter-spacing: 1px;">LIVE DIAGNOSTICS</span>
+                    <button onclick="clearLog()"
+                        style="background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.3); color: #fca5a5; font-size: 9px; padding: 2px 8px; border-radius: 4px; cursor: pointer; text-transform: uppercase; font-weight: 700;">Clear</button>
+                </div>
             </div>
             <div id="console-log">
                 <!-- Log entries will be injected here -->
@@ -574,38 +627,59 @@
                     createNewNodeCard(b);
                 }
             });
+
+            // Update node card states (proxy, hold)
+            updateNodeState(browserList);
         }
 
         function createNewNodeCard(b) {
             const card = document.createElement('div');
-            card.className = 'browser-card';
+            card.className = 'browser-card' + (b.is_held ? ' is-held' : '');
             card.id = `card-${b.sid}`;
+            card.dataset.nodeId = b.id;
+
+            const proxyClass = (b.proxy_info && !b.proxy_info.includes('Direct')) ? '' : 'direct';
+            const proxyLabel = b.proxy_info || 'Direct';
+
             card.innerHTML = `
                 <div class="card-header">
                     <div class="master-badge">Master</div>
+                    <div class="hold-indicator">🔒 HELD</div>
                     <div class="lease-indicator">LEASED</div>
                     <div class="browser-id">${b.id}</div>
                     <div class="card-actions">
+                        <button class="icon-btn" onclick="toggleHold('${b.sid}', '${b.id}')" title="Hold/Release Node">
+                            <svg viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg>
+                        </button>
                         <button class="icon-btn" onclick="toggleMaster('${b.sid}')" title="Set as Master">
                             <svg viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
                         </button>
-                        <button class="icon-btn" onclick="startStream('${b.sid}')" title="Reconnect Stream">
+                        <button class="icon-btn" onclick="refreshPage('${b.sid}')" title="Refresh Page">
                             <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+                        </button>
+                        <button class="icon-btn" onclick="startStream('${b.sid}')" title="Reconnect Stream">
+                            <svg viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
                         </button>
                         <button class="icon-btn" onclick="fullRestart('${b.sid}')" title="Full Browser Restart">
                             <svg viewBox="0 0 24 24"><path d="M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z"/></svg>
                         </button>
                     </div>
                 </div>
-                <div class="nav-bar">
-                    <button class="icon-btn" onclick="navigate('${b.sid}', 'back')"><svg viewBox="0 0 24 24"><path d="M15.41 16.59L10.83 12l4.58-4.59L14 6l-6 6 6 6 1.41-1.41z"/></svg></button>
-                    <button class="icon-btn" onclick="navigate('${b.sid}', 'forward')"><svg viewBox="0 0 24 24"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/></svg></button>
+                <div class="nav-bar" style="justify-content: space-between;">
+                    <div style="display: flex; gap: 4px; align-items: center;">
+                        <button class="icon-btn" onclick="navigate('${b.sid}', 'back')"><svg viewBox="0 0 24 24"><path d="M15.41 16.59L10.83 12l4.58-4.59L14 6l-6 6 6 6 1.41-1.41z"/></svg></button>
+                        <button class="icon-btn" onclick="navigate('${b.sid}', 'forward')"><svg viewBox="0 0 24 24"><path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"/></svg></button>
+                    </div>
                     <input type="text" class="nav-input" id="url-${b.sid}" placeholder="Enter URL..." onkeydown="if(event.key==='Enter') navigate('${b.sid}', 'goto')">
+                    <div class="proxy-badge ${proxyClass}" id="proxy-${b.sid}">
+                        ${proxyClass === 'direct' ? '🏠' : '🌐'} ${proxyLabel}
+                    </div>
                 </div>
                 <div class="video-wrapper">
                     <video id="video-${b.sid}" autoplay playsinline muted></video>
                 </div>
                 <div class="card-footer">
+                    <div class="rtc-status" id="rtc-${b.sid}">Connecting...</div>
                     <div class="sync-toggle" id="sync-${b.sid}" onclick="toggleSync('${b.sid}')">
                         <div class="toggle-switch"></div>
                         <span>Sync Control</span>
@@ -613,7 +687,7 @@
                 </div>
             `;
             grid.appendChild(card);
-            log(`Node ${b.id} initialized and stream started`, 'success');
+            log(`Node ${b.id} initialized`, 'success');
 
             const nodeData = {
                 sid: b.sid,
@@ -674,6 +748,44 @@
             node.pc.onicecandidate = (e) => {
                 if (e.candidate) socket.emit('ice_candidate', { target: sid, candidate: e.candidate });
             };
+
+            // WebRTC Connection State Monitoring
+            const rtcEl = document.getElementById(`rtc-${sid}`);
+            if (rtcEl) {
+                node.pc.onconnectionstatechange = () => {
+                    switch (node.pc.connectionState) {
+                        case 'connected':
+                            rtcEl.textContent = '✓ Live';
+                            rtcEl.className = 'rtc-status connected';
+                            break;
+                        case 'connecting':
+                            rtcEl.textContent = 'Connecting...';
+                            rtcEl.className = 'rtc-status';
+                            break;
+                        case 'disconnected':
+                            rtcEl.textContent = 'Reconnecting...';
+                            rtcEl.className = 'rtc-status';
+                            // Auto-reconnect after 2s
+                            setTimeout(() => {
+                                if (node.pc.connectionState === 'disconnected') {
+                                    log(`Auto-reconnecting stream for ${sid}...`, 'warning');
+                                    startStream(sid);
+                                }
+                            }, 2000);
+                            break;
+                        case 'failed':
+                            rtcEl.textContent = '✕ Failed';
+                            rtcEl.className = 'rtc-status';
+                            log(`WebRTC failed for ${sid}, attempting restart...`, 'error');
+                            setTimeout(() => startStream(sid), 1000);
+                            break;
+                        case 'closed':
+                            rtcEl.textContent = 'Closed';
+                            rtcEl.className = 'rtc-status';
+                            break;
+                    }
+                };
+            }
 
             node.pc.addTransceiver('video', { direction: 'recvonly' });
             const offer = await node.pc.createOffer();
@@ -824,8 +936,60 @@
             }
         }
 
+        function clearLog() {
+            document.getElementById('console-log').innerHTML = '';
+            log('Log cleared.', 'info');
+        }
+
         // Initial Log
         log('System initialized. Waiting for node connection...', 'info');
+
+        // ===== NEW FUNCTIONS =====
+
+        function toggleHold(sid, nodeId) {
+            socket.emit('toggle_hold_node', { node_id: nodeId }, (response) => {
+                if (response && response.success) {
+                    const card = document.getElementById(`card-${sid}`);
+                    if (response.is_held) {
+                        card.classList.add('is-held');
+                        log(`Node ${nodeId} is now HELD (preserved on disconnect)`, 'success');
+                    } else {
+                        card.classList.remove('is-held');
+                        log(`Node ${nodeId} hold RELEASED`, 'info');
+                    }
+                } else {
+                    log(`Failed to toggle hold: ${response?.error || 'Unknown error'}`, 'error');
+                }
+            });
+        }
+
+        function refreshPage(sid) {
+            socket.emit('refresh_page', { target: sid });
+            log(`Page refresh requested for ${sid}`, 'info');
+        }
+
+        // Update node card state when browser_list_update arrives
+        function updateNodeState(browserList) {
+            browserList.forEach(b => {
+                const card = document.getElementById(`card-${b.sid}`);
+                if (card) {
+                    // Update held status
+                    if (b.is_held) {
+                        card.classList.add('is-held');
+                    } else {
+                        card.classList.remove('is-held');
+                    }
+
+                    // Update proxy badge
+                    const proxyBadge = document.getElementById(`proxy-${b.sid}`);
+                    if (proxyBadge && b.proxy_info) {
+                        const isDirect = b.proxy_info.includes('Direct');
+                        proxyBadge.className = 'proxy-badge' + (isDirect ? ' direct' : '');
+                        proxyBadge.innerHTML = `${isDirect ? '🏠' : '🌐'} ${b.proxy_info}`;
+                    }
+                }
+            });
+        }
     </script>
 </body>
 

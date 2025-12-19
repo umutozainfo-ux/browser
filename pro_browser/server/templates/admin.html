@@ -156,6 +156,12 @@
                     <span style="color: #10b981;">Free: <b id="stat-free">{{ stats.free }}</b></span>
                     <span style="color: #f59e0b;">In Use: <b id="stat-in-use">{{ stats.in_use }}</b></span>
                 </div>
+                <form action="/admin/reset" method="POST" style="margin:0;"
+                    onsubmit="return confirm('Emergency Reset: This will clear all node leases and disconnect all users. Continue?')">
+                    <button type="submit" class="btn btn-del"
+                        style="background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.4); color: #fca5a5; padding: 8px 16px;">Emergency
+                        Reset</button>
+                </form>
                 <a href="/logout" class="logout">Logout</a>
             </div>
         </header>

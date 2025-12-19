@@ -153,26 +153,26 @@ class BrowserManager:
         async with self.input_lock:
             try:
                 type = event.get('type')
-            if type == 'mousemove':
-                await self.page.mouse.move(event['x'], event['y'])
-            elif type == 'mousedown':
-                await self.page.mouse.move(event['x'], event['y'])
-                await self.page.mouse.down()
-            elif type == 'mouseup':
-                await self.page.mouse.move(event['x'], event['y'])
-                await self.page.mouse.up()
-            elif type == 'keydown':
-                await self.page.keyboard.press(event['key'])
-            elif type == 'navigate':
-                await self.navigate_to(event.get('url'))
-            elif type == 'back':
-                await self.page.go_back()
-            elif type == 'forward':
-                await self.page.go_forward()
-            elif type == 'reload':
-                await self.page.reload()
-        except Exception as e:
-            logger.error(f"Input error: {e}", exc_info=True)
+                if type == 'mousemove':
+                    await self.page.mouse.move(event['x'], event['y'])
+                elif type == 'mousedown':
+                    await self.page.mouse.move(event['x'], event['y'])
+                    await self.page.mouse.down()
+                elif type == 'mouseup':
+                    await self.page.mouse.move(event['x'], event['y'])
+                    await self.page.mouse.up()
+                elif type == 'keydown':
+                    await self.page.keyboard.press(event['key'])
+                elif type == 'navigate':
+                    await self.navigate_to(event.get('url'))
+                elif type == 'back':
+                    await self.page.go_back()
+                elif type == 'forward':
+                    await self.page.go_forward()
+                elif type == 'reload':
+                    await self.page.reload()
+            except Exception as e:
+                logger.error(f"Input error: {e}", exc_info=True)
 
     async def navigate_to(self, url: str):
         if not self.page or not url: return

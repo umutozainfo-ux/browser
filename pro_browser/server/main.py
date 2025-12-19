@@ -45,18 +45,26 @@ def save_proxies(proxies):
         json.dump(proxies, f, indent=4)
 
 # Store connected browsers
-# browsers[sid] = {'id': id, 'sid': sid, 'in_use_by': username or None, 'assigned_at': timestamp or None}
+# browsers[sid] = {'id': id, 'sid': sid, 'in_use_by': username or None, 'assigned_at': timestamp or None, 'proxy_info': str, 'is_held': bool}
 browsers = {}
 
 # Node ID -> Username persistent leases
 # This survives SID changes (browser reconnects)
 node_leases = {}
 
+# Held nodes mapping: node_id -> {username, held_at, expiry}
+# When a user disconnects, their nodes are NOT freed if held
+held_nodes = {}
+HOLD_TIMEOUT_MINUTES = 10  # Nodes are released after 10 minutes of user being offline
+
 # List of usernames waiting for nodes (FIFO)
 waiting_users = []
 
 # sid -> username mapping for security
 sid_to_user = {}
+
+# Track last seen time for users (for hold expiry)
+user_last_seen = {}
 
 # Global lock for node allocation to prevent race conditions
 allocation_lock = asyncio.Lock()
@@ -231,6 +239,22 @@ async def admin_delete_user():
     await sio.emit('access_revoked', {}, room=f"user_{username}")
     return redirect(url_for('admin'))
 
+@app.route('/admin/reset', methods=['POST'])
+@login_required
+async def admin_reset_all():
+    if session.get('role') != 'admin': return abort(403)
+    
+    async with allocation_lock:
+        node_leases.clear()
+        for b_data in browsers.values():
+            b_data['in_use_by'] = None
+            b_data['assigned_at'] = None
+        waiting_users.clear()
+        
+    await broadcast_to_all_users()
+    await broadcast_stats()
+    return redirect(url_for('admin'))
+
 async def try_assign_nodes(username):
     """Attempt to assign free nodes to a user up to their limit via leases."""
     if not username or username == 'admin': return
@@ -341,6 +365,10 @@ async def emit_user_browsers(sid, username=None):
     limit = db['users'].get(username, {}).get('nodes', 0) if username != 'admin' else 999
     allowed = get_user_allowed_nodes(username)
     
+    # Enrich nodes with is_held status
+    for node in allowed:
+        node['is_held'] = node['id'] in held_nodes
+    
     # Calculate how many nodes they are waiting for (leases vs limit)
     current_lease_count = len([nid for nid, uname in node_leases.items() if uname == username])
     waiting_count = max(0, limit - current_lease_count) if username != 'admin' else 0
@@ -360,6 +388,7 @@ async def set_user(sid, data):
     username = data.get('username')
     role = data.get('role', 'user')
     sid_to_user[sid] = username
+    user_last_seen[username] = datetime.datetime.now()  # Track last seen
     
     if role == 'admin' or username == 'admin':
         sio.enter_room(sid, 'role_admin')
@@ -395,14 +424,12 @@ async def disconnect(sid):
                         b_data['in_use_by'] = None
                         b_data['assigned_at'] = None
                 
-                # 2. Release LEASES only for standard users
-                # We could keep leases for a few minutes here for "sticky" sessions
-                # but for now we clear them to free up nodes immediately.
+                # 2. Release LEASES ONLY for nodes that are NOT held
                 if username != 'admin':
-                    expired_leases = [nid for nid, uname in node_leases.items() if uname == username]
+                    expired_leases = [nid for nid, uname in node_leases.items() if uname == username and nid not in held_nodes]
                     for nid in expired_leases:
                         del node_leases[nid]
-                    logger.info(f"Freed {len(expired_leases)} nodes (user {username} completely disconnected)")
+                    logger.info(f"Freed {len(expired_leases)} nodes (user {username} disconnected, {len([n for n in held_nodes if held_nodes.get(n, {}).get('username') == username])} nodes held)")
             
             await reassign_freed_nodes()
         else:
@@ -417,6 +444,7 @@ async def disconnect(sid):
 @sio.event
 async def register_browser(sid, data):
     browser_id = data.get('id', sid)
+    proxy_info = data.get('proxy_info', 'Direct')  # New: receive proxy info from node
     
     # Check if this browser ID is already leased to someone
     leased_to = node_leases.get(browser_id)
@@ -425,9 +453,11 @@ async def register_browser(sid, data):
         'id': browser_id, 
         'sid': sid, 
         'in_use_by': leased_to, 
-        'assigned_at': datetime.datetime.now().isoformat() if leased_to else None
+        'assigned_at': datetime.datetime.now().isoformat() if leased_to else None,
+        'proxy_info': proxy_info,
+        'is_held': browser_id in held_nodes
     }
-    logger.info(f"Browser registered: {browser_id} (Leased to: {leased_to})")
+    logger.info(f"Browser registered: {browser_id} (Leased to: {leased_to}, Proxy: {proxy_info})")
     
     await reassign_freed_nodes()
     await broadcast_stats()
@@ -556,6 +586,151 @@ async def admin_kick_user(sid, data):
     await sio.emit('access_revoked', {}, room=f"user_{target_user}")
     await reassign_freed_nodes()
     await broadcast_to_all_users()
+
+# --- Node Holding Feature ---
+
+@sio.on('toggle_hold_node')
+async def toggle_hold_node(sid, data):
+    """Toggle hold status for a node. Only the user who owns the lease can hold it."""
+    username = sid_to_user.get(sid)
+    node_id = data.get('node_id')
+    
+    if not username or not node_id:
+        return {'success': False, 'error': 'Invalid request'}
+    
+    # Verify ownership
+    if node_leases.get(node_id) != username and username != 'admin':
+        return {'success': False, 'error': 'You do not own this node'}
+    
+    async with allocation_lock:
+        if node_id in held_nodes:
+            # Unhold
+            del held_nodes[node_id]
+            logger.info(f"Node {node_id} UNHELD by {username}")
+        else:
+            # Hold
+            held_nodes[node_id] = {
+                'username': username,
+                'held_at': datetime.datetime.now().isoformat(),
+                'expiry': (datetime.datetime.now() + datetime.timedelta(minutes=HOLD_TIMEOUT_MINUTES)).isoformat()
+            }
+            logger.info(f"Node {node_id} HELD by {username} (expires in {HOLD_TIMEOUT_MINUTES}m)")
+    
+    # Update browser state
+    for b_sid, b_data in browsers.items():
+        if b_data['id'] == node_id:
+            b_data['is_held'] = node_id in held_nodes
+    
+    await broadcast_to_all_users()
+    return {'success': True, 'is_held': node_id in held_nodes}
+
+@sio.on('change_proxy_request')
+async def change_proxy_request(sid, data):
+    """Request a node to restart with a different proxy or no proxy."""
+    username = sid_to_user.get(sid)
+    target_sid = data.get('target')
+    new_proxy = data.get('proxy')  # None for direct, or a proxy object
+    
+    if not username or not target_sid:
+        return {'success': False, 'error': 'Invalid request'}
+    
+    if not is_authorized(sid, target_sid):
+        return {'success': False, 'error': 'Unauthorized'}
+    
+    # Send proxy change request to the node
+    await sio.emit('set_proxy', {'proxy': new_proxy}, room=target_sid)
+    logger.info(f"Proxy change requested for {target_sid} by {username}: {new_proxy}")
+    return {'success': True}
+
+@sio.on('refresh_page')
+async def refresh_page(sid, data):
+    """Request a node to refresh its current page."""
+    username = sid_to_user.get(sid)
+    target_sid = data.get('target')
+    
+    if not username or not target_sid:
+        return
+    
+    if is_authorized(sid, target_sid):
+        await sio.emit('control_event', {'type': 'reload'}, room=target_sid)
+        logger.info(f"Page refresh requested for {target_sid} by {username}")
+
+# --- Background Cleanup Task ---
+
+async def background_cleanup_task():
+    """Background task to clean up expired holds and accounts."""
+    while True:
+        await asyncio.sleep(60)  # Run every minute
+        try:
+            now = datetime.datetime.now()
+            
+            # 1. Check for expired holds (user offline for too long)
+            async with allocation_lock:
+                expired_hold_ids = []
+                for node_id, hold_info in list(held_nodes.items()):
+                    username = hold_info.get('username')
+                    
+                    # Check if user is still connected
+                    user_online = any(u == username for u in sid_to_user.values())
+                    
+                    if not user_online:
+                        # Check expiry
+                        expiry = datetime.datetime.fromisoformat(hold_info.get('expiry'))
+                        if now > expiry:
+                            expired_hold_ids.append(node_id)
+                            logger.info(f"Hold expired for node {node_id} (user {username} offline too long)")
+                
+                # Release expired holds
+                for node_id in expired_hold_ids:
+                    del held_nodes[node_id]
+                    if node_id in node_leases:
+                        del node_leases[node_id]
+                    # Clear in_use_by
+                    for b_sid, b_data in browsers.items():
+                        if b_data['id'] == node_id:
+                            b_data['in_use_by'] = None
+                            b_data['assigned_at'] = None
+                            b_data['is_held'] = False
+                
+                if expired_hold_ids:
+                    await reassign_freed_nodes()
+            
+            # 2. Check for expired user accounts
+            db = load_users()
+            for username, user_data in list(db['users'].items()):
+                expires_at = datetime.datetime.fromisoformat(user_data['expires_at'])
+                if now > expires_at:
+                    # Kick the user
+                    logger.info(f"Account expired for {username}, kicking...")
+                    await sio.emit('access_revoked', {}, room=f"user_{username}")
+                    
+                    # Clear their leases and holds
+                    async with allocation_lock:
+                        expired_leases = [nid for nid, uname in node_leases.items() if uname == username]
+                        for nid in expired_leases:
+                            if nid in held_nodes:
+                                del held_nodes[nid]
+                            del node_leases[nid]
+                        
+                        for b_sid, b_data in browsers.items():
+                            if b_data.get('in_use_by') == username:
+                                b_data['in_use_by'] = None
+                                b_data['assigned_at'] = None
+                                b_data['is_held'] = False
+                    
+                    await reassign_freed_nodes()
+            
+            await broadcast_to_all_users()
+            await broadcast_stats()
+            
+        except Exception as e:
+            logger.error(f"Background cleanup error: {e}")
+
+# Start background task when app starts
+@app.before_serving
+async def startup():
+    asyncio.create_task(background_cleanup_task())
+    logger.info("Background cleanup task started")
 
 if __name__ == '__main__':
     import uvicorn

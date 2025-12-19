@@ -33,19 +33,24 @@ class BrowserVideoTrack(MediaStreamTrack):
                 
             await asyncio.sleep(0.1)
 
-sio = socketio.AsyncClient()
+sio = socketio.AsyncClient(reconnection=True, reconnection_attempts=0, reconnection_delay=1, reconnection_delay_max=30)
 browser = BrowserManager()
 pcs = set()
 offer_lock = asyncio.Lock()
+
+# Current proxy state for the node
+current_proxy = None
+current_proxy_info = "Direct"
 
 # Random Node ID
 NODE_ID = f"node-{str(uuid.uuid4())[:8]}"
 
 @sio.event
 async def connect():
+    global current_proxy_info
     logger.info(f"Connected to Server as {NODE_ID}")
     try:
-        await sio.emit('register_browser', {'id': NODE_ID})
+        await sio.emit('register_browser', {'id': NODE_ID, 'proxy_info': current_proxy_info})
     except Exception as e:
         logger.error(f"Error during registration: {e}")
 
@@ -173,37 +178,73 @@ async def restart_browser(data):
     pcs.clear()
     await browser.close()
 
+@sio.on('set_proxy')
+async def set_proxy(data):
+    """Handle proxy change request from server."""
+    global current_proxy, current_proxy_info
+    new_proxy = data.get('proxy')
+    logger.info(f"Received set_proxy request: {new_proxy}")
+    
+    current_proxy = new_proxy
+    if new_proxy:
+        current_proxy_info = f"Proxy: {new_proxy.get('server', 'Unknown')}"
+    else:
+        current_proxy_info = "Direct"
+    
+    # Close current browser and restart with new proxy
+    for pc in list(pcs):
+        await pc.close()
+    pcs.clear()
+    await browser.close()
+
 async def main():
+    global current_proxy, current_proxy_info
     logger.info(f"Starting Browser Node {NODE_ID}...")
     server_url = os.getenv('SERVER_URL', 'http://localhost:5000')
+    reconnect_delay = 1  # Exponential backoff starting point
 
     while True:
         try:
             if not sio.connected:
                 logger.info(f"Connecting to server at {server_url}...")
-                await sio.connect(server_url, wait_timeout=10)
+                try:
+                    await sio.connect(server_url, wait_timeout=10)
+                    reconnect_delay = 1  # Reset on successful connection
+                except Exception as conn_e:
+                    logger.warning(f"Connection failed, retrying in {reconnect_delay}s: {conn_e}")
+                    await asyncio.sleep(reconnect_delay)
+                    reconnect_delay = min(reconnect_delay * 2, 60)  # Cap at 60s
+                    continue
             
-            # Request random proxy from server
-            proxy = None
-            try:
-                proxy = await sio.call('request_proxy', {}, timeout=5)
-            except Exception as e:
-                logger.warning(f"Failed to fetch proxy: {e}")
+            # Request random proxy from server (only if we don't have one set)
+            if current_proxy is None:
+                try:
+                    current_proxy = await sio.call('request_proxy', {}, timeout=5)
+                    if current_proxy:
+                        current_proxy_info = f"Proxy: {current_proxy.get('server', 'Unknown')}"
+                    else:
+                        current_proxy_info = "Direct"
+                except Exception as e:
+                    logger.warning(f"Failed to fetch proxy: {e}")
+                    current_proxy_info = "Direct"
 
-            logger.info("Initializing Browser...")
+            logger.info(f"Initializing Browser ({current_proxy_info})...")
             try:
-                await browser.start(proxy=proxy)
+                await browser.start(proxy=current_proxy)
             except Exception as e:
                 if "PROXY_FAILURE" in str(e):
-                    logger.warning("Proxy failed, falling back to direct connection...")
+                    logger.warning("[FALLBACK] Proxy failed, switching to direct connection...")
+                    current_proxy = None
+                    current_proxy_info = "Direct (Fallback)"
                     await browser.start(proxy=None)
                 else:
                     raise e
             
             if not sio.connected:
                 await sio.connect(server_url, wait_timeout=5)
-            else:
-                await sio.emit('register_browser', {'id': NODE_ID})
+            
+            # Register with updated proxy info
+            await sio.emit('register_browser', {'id': NODE_ID, 'proxy_info': current_proxy_info})
             
             while browser.is_healthy():
                 await asyncio.sleep(2)
