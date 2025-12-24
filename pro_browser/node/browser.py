@@ -64,18 +64,15 @@ class BrowserManager:
                 self.page = await self.context.new_page()
                 self.cdp = await self.context.new_cdp_session(self.page)
                 
+                self.running = True
+                await self.start_screencast()
+                
                 logger.info("Navigating to initial page...")
                 try:
                     await self.page.goto('https://www.google.com', wait_until="domcontentloaded", timeout=15000)
                 except Exception as nav_e:
-                    logger.error(f"Initial navigation failed: {nav_e}")
-                    if "ERR_TUNNEL_CONNECTION_FAILED" in str(nav_e) or "ERR_PROXY_CONNECTION_FAILED" in str(nav_e):
-                        raise Exception(f"PROXY_FAILURE: {nav_e}")
-                    raise nav_e
+                    logger.warning(f"Initial navigation slow/failed: {nav_e}")
                 
-                await self.start_screencast()
-                
-                self.running = True
                 logger.info("Browser started successfully.")
             except Exception as e:
                 logger.error(f"Failed to start browser: {e}")
@@ -117,11 +114,11 @@ class BrowserManager:
             asyncio.create_task(self._safe_ack(data.get('sessionId')))
             if not data.get('data'): return
             
-            # Log every 100th frame instead of every frame
+            # Log frame reception (debug)
             if not hasattr(self, '_frame_count'): self._frame_count = 0
             self._frame_count += 1
-            if self._frame_count % 100 == 1:
-                logger.info(f"Screencast frame received ({self._frame_count})")
+            if self._frame_count % 30 == 1:
+                logger.debug(f"Screencast frame received ({self._frame_count})")
 
             image_data = base64.b64decode(data['data'])
             import cv2
@@ -148,6 +145,12 @@ class BrowserManager:
     async def get_latest_frame(self) -> Optional[VideoFrame]:
         return self.last_frame
 
+    def get_latest_raw(self):
+        """Return the latest frame as a numpy array with timestamp, avoiding async overhead"""
+        if self.last_frame:
+            return self.last_frame.to_ndarray(format='bgr24'), self.last_frame.pts
+        return None, None
+
     async def handle_input(self, event):
         if not self.running or not self.page: return
         async with self.input_lock:
@@ -171,6 +174,8 @@ class BrowserManager:
                     await self.page.go_forward()
                 elif type == 'reload':
                     await self.page.reload()
+                elif type == 'wheel':
+                    await self.page.mouse.wheel(delta_x=event.get('deltaX', 0), delta_y=event.get('deltaY', 0))
             except Exception as e:
                 logger.error(f"Input error: {e}", exc_info=True)
 

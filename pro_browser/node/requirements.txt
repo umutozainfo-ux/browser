@@ -4,3 +4,4 @@ python-socketio[asyncio_client]
 numpy
 Pillow
 opencv-python-headless
+av

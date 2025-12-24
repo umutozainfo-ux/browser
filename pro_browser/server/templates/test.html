@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Video Diagnostic Test</title>
+    <style>
+        body {
+            background: #111;
+            color: #eee;
+            font-family: monospace;
+            padding: 20px;
+        }
+
+        #video-container {
+            border: 2px solid cyan;
+            width: 640px;
+            height: 360px;
+            margin-bottom: 20px;
+        }
+
+        video {
+            width: 100%;
+            height: 100%;
+            background: #000;
+        }
+
+        #log {
+            height: 300px;
+            overflow-y: scroll;
+            border: 1px solid #555;
+            padding: 10px;
+            font-size: 12px;
+        }
+
+        .success {
+            color: #4f4;
+        }
+
+        .error {
+            color: #f44;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Video Diagnostic Mode</h1>
+    <div>
+        <button onclick="startTest()">START TEST</button>
+        <span id="status">Waiting...</span>
+    </div>
+    <br>
+
+    <div id="video-container">
+        <video id="player" autoplay muted playsinline></video>
+    </div>
+
+    <div id="log"></div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jmuxer@2.0.5/dist/jmuxer.min.js"></script>
+    <script>
+        const socket = io({
+            transports: ['websocket'], // Force websocket to avoid XHR poll errors
+            reconnectionAttempts: 5,
+            timeout: 10000
+        });
+        const logEl = document.getElementById('log');
+        let jmuxer = null;
+        let targetSid = null;
+
+        function log(msg, type = '') {
+            const d = document.createElement('div');
+            d.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            if (type) d.className = type;
+            logEl.prepend(d);
+        }
+
+        socket.on('connect_error', (err) => {
+            log(`Connection Error: ${err.message}`, 'error');
+        });
+
+        socket.on('connect_timeout', () => {
+            log('Connection Timeout', 'error');
+        });
+
+        function hex(buffer, len = 4) {
+            return Array.from(new Uint8Array(buffer).slice(0, len))
+                .map(b => b.toString(16).padStart(2, '0')).join(' ');
+        }
+
+        socket.on('connect', () => {
+            log('Socket Connected', 'success');
+            socket.emit('set_user', { username: 'admin', role: 'admin' });
+        });
+
+        socket.on('browser_list_update', (data) => {
+            if (data.nodes && data.nodes.length > 0 && !targetSid) {
+                targetSid = data.nodes[0].sid;
+                log(`Found Node: ${targetSid}. Ready to start.`);
+                document.getElementById('status').textContent = `Ready (Target: ${targetSid})`;
+            }
+        });
+
+        function startTest() {
+            if (!targetSid) {
+                log('No nodes available yet!', 'error');
+                return;
+            }
+
+            log('Initializing JMuxer...');
+            if (jmuxer) jmuxer.destroy();
+
+            try {
+                jmuxer = new JMuxer({
+                    node: 'player',
+                    mode: 'video',
+                    flushingTime: 0,
+                    clearBuffer: true,
+                    fps: 30,
+                    debug: true, // Enable debug
+                    onError: (e) => log(`JMuxer Error: ${e}`, 'error')
+                });
+
+                log('Requesting Fallback Stream...');
+                socket.emit('request_fallback', { target: targetSid });
+                setTimeout(() => socket.emit('request_keyframe', { target: targetSid }), 500);
+            } catch (e) {
+                log(`Init Error: ${e.message}`, 'error');
+            }
+        }
+
+        socket.on('video_frame', (msg) => {
+            if (!jmuxer) return;
+            try {
+                const data = new Uint8Array(msg.data);
+                log(`Received ${data.byteLength} bytes. Header: ${hex(data.buffer, 6)}...`);
+
+                jmuxer.feed({ video: data });
+
+                // Try to force play if paused
+                const v = document.getElementById('player');
+                if (v.paused) v.play().catch(e => { });
+
+            } catch (e) {
+                log(`Feed Error: ${e.message}`, 'error');
+            }
+        });
+
+        socket.on('connect_error', (e) => log(`Socket Connect Error: ${e}`, 'error'));
+    </script>
+</body>
+
+</html>

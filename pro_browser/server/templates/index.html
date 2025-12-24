@@ -79,12 +79,10 @@
             background: #475569;
         }
 
-        .global-btn.auto-connect {
-            background: #0284c7;
-        }
-
-        .global-btn.auto-connect:hover {
-            background: #0369a1;
+        .global-btn.active {
+            background: var(--accent);
+            color: var(--bg-dark);
+            border-color: var(--accent);
         }
 
         #stats {
@@ -201,51 +199,64 @@
             object-fit: contain;
         }
 
+        .fallback-video-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #000;
+        }
+
+        .fallback-video-container video {
+            max-width: 100%;
+            max-height: 100%;
+            pointer-events: none;
+        }
+
+        /* Mode Toggle Buttons */
+        .mode-btn {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .mode-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--text-primary);
+        }
+
+        .mode-btn.active {
+            background: var(--accent);
+            color: var(--bg-dark);
+            border-color: var(--accent);
+            font-weight: 700;
+        }
+
         .card-footer {
             padding: 8px 15px;
             display: flex;
             align-items: center;
-            gap: 15px;
+            justify-content: space-between;
             background: rgba(0, 0, 0, 0.2);
         }
 
-        .sync-toggle {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 11px;
-            color: var(--text-secondary);
-            cursor: pointer;
-            user-select: none;
+        .rtc-status {
+            font-size: 9px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: rgba(100, 116, 139, 0.2);
+            color: #94a3b8;
         }
 
-        .toggle-switch {
-            width: 32px;
-            height: 18px;
-            background: #334155;
-            border-radius: 10px;
-            position: relative;
-            transition: background 0.3s;
-        }
-
-        .toggle-switch::after {
-            content: "";
-            position: absolute;
-            left: 2px;
-            top: 2px;
-            width: 14px;
-            height: 14px;
-            background: #fff;
-            border-radius: 50%;
-            transition: transform 0.3s;
-        }
-
-        .sync-active .toggle-switch {
-            background: var(--success);
-        }
-
-        .sync-active .toggle-switch::after {
-            transform: translateX(14px);
+        .rtc-status.connected {
+            background: rgba(34, 197, 94, 0.2);
+            color: var(--success);
         }
 
         .master-badge {
@@ -431,19 +442,6 @@
             box-shadow: 0 0 15px rgba(251, 191, 36, 0.15);
         }
 
-        .rtc-status {
-            font-size: 9px;
-            padding: 2px 6px;
-            border-radius: 4px;
-            background: rgba(100, 116, 139, 0.2);
-            color: #94a3b8;
-        }
-
-        .rtc-status.connected {
-            background: rgba(34, 197, 94, 0.2);
-            color: var(--success);
-        }
-
         #main-layout {
             display: flex;
             flex: 1;
@@ -462,9 +460,10 @@
         </div>
 
         <div id="main-controls">
-            <button class="global-btn auto-connect" onclick="connectAll()">
-                Connect All
-            </button>
+            <!-- New Global Mode Toggles -->
+            <button class="global-btn" onclick="setGlobalMode('webrtc')">Force WebRTC</button>
+            <button class="global-btn active" onclick="setGlobalMode('fallback')">Force Socket</button>
+
             <button class="global-btn" onclick="syncAll(true)">Sync All</button>
             <button class="global-btn" onclick="syncAll(false)">Deselect All</button>
             {% if user == 'admin' %}
@@ -529,7 +528,8 @@
         </div>
     </div>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.5.4/socket.io.js"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jmuxer@2.0.5/dist/jmuxer.min.js"></script>
     <script>
         const socket = io();
         const nodes = new Map(); // sid -> nodeData object
@@ -537,6 +537,10 @@
         let masterSid = null;
         const expiresAt = new Date("{{ expires_at }}");
         const currentUser = "{{ user }}";
+
+        let globalPreferredMode = 'fallback'; // 'webrtc' or 'fallback'
+
+        const FALLBACK_TIMEOUT = 5000;
 
         // Countdown Timer
         function updateCountdown() {
@@ -559,7 +563,6 @@
         socket.on('connect', () => {
             document.getElementById('socket-dot').classList.add('active');
             document.getElementById('socket-status').textContent = 'Socket: Connected';
-            // Identify user for filtered node list
             socket.emit('set_user', { username: currentUser });
         });
 
@@ -577,6 +580,45 @@
             updateGrid(data.nodes, data.waiting_count, data.limit);
         });
 
+        // Binary Video Handler (Fallback)
+        socket.on('video_frame', (msg) => {
+            const node = nodes.get(msg.sid);
+            if (node && node.isFallback && node.jmuxer) {
+                try {
+                    const data = msg.data instanceof ArrayBuffer ? msg.data : msg.data.buffer || msg.data;
+
+                    if (!node._byteCount) node._byteCount = 0;
+                    node._byteCount += data.byteLength;
+
+                    node.jmuxer.feed({
+                        video: new Uint8Array(data)
+                    });
+                    node.lastFrameTime = Date.now();
+
+                    if (node.statusEl.textContent.indexOf('Live') === -1) {
+                        node.statusEl.textContent = 'Socket (Live)';
+                        node.statusEl.className = 'rtc-status connected';
+                        log(`First frame received for ${msg.sid}`, 'success');
+
+                        // Ensure video is playing
+                        const v = node.fallbackContainer.querySelector('video');
+                        if (v) {
+                            v.muted = true;
+                            v.play().catch(e => log(`Autoplay blocked: ${e.message}`, 'warning'));
+                        }
+                    }
+
+                    // Small visual indicator of data flow
+                    const dot = document.getElementById(`socket-dot`);
+                    dot.style.transform = 'scale(1.2)';
+                    setTimeout(() => dot.style.transform = 'scale(1)', 50);
+
+                } catch (e) {
+                    log(`JMuxer Feed Error: ${e.message}`, 'error');
+                }
+            }
+        });
+
         function updateGrid(browserList, waitingCount, limit) {
             const countEl = document.getElementById('nodes-count');
             const msgEl = document.getElementById('no-nodes-msg');
@@ -588,7 +630,6 @@
 
             if (countEl) countEl.textContent = `${browserList.length} active`;
 
-            // Handling the "Waiting" and "No Nodes" messages
             if (browserList.length === 0 && waitingCount === 0) {
                 msgEl.style.display = 'block';
                 msgEl.innerHTML = `
@@ -602,7 +643,7 @@
             } else if (waitingCount > 0) {
                 msgEl.style.display = 'block';
                 msgEl.innerHTML = `
-                    <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); padding: 20px; border-radius: 12px; display: inline-block;">
+                     <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); padding: 20px; border-radius: 12px; display: inline-block;">
                         <div class="spinner" style="width: 24px; height: 24px; border: 3px solid rgba(245, 158, 11, 0.3); border-top-color: var(--warning); border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 15px;"></div>
                         <h2 style="color: var(--warning); margin-bottom: 10px;">Waiting for Nodes</h2>
                         <p>You are waiting for <b>${waitingCount}</b> more nodes to become available.</p>
@@ -612,7 +653,6 @@
                 msgEl.style.display = 'none';
             }
 
-            // Remove nodes that are gone
             const currentSids = new Set(browserList.map(b => b.sid));
             for (const [sid, node] of nodes) {
                 if (!currentSids.has(sid)) {
@@ -621,14 +661,12 @@
                 }
             }
 
-            // Add or update nodes (browsers already assigned to this user)
             browserList.forEach(b => {
                 if (!nodes.has(b.sid)) {
                     createNewNodeCard(b);
                 }
             });
 
-            // Update node card states (proxy, hold)
             updateNodeState(browserList);
         }
 
@@ -657,9 +695,6 @@
                         <button class="icon-btn" onclick="refreshPage('${b.sid}')" title="Refresh Page">
                             <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
                         </button>
-                        <button class="icon-btn" onclick="startStream('${b.sid}')" title="Reconnect Stream">
-                            <svg viewBox="0 0 24 24"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
-                        </button>
                         <button class="icon-btn" onclick="fullRestart('${b.sid}')" title="Full Browser Restart">
                             <svg viewBox="0 0 24 24"><path d="M13 3h-2v10h2V3zm4.83 2.17l-1.42 1.42C17.99 7.86 19 9.81 19 12c0 3.87-3.13 7-7 7s-7-3.13-7-7c0-2.19 1.01-4.14 2.58-5.42L6.17 5.17C4.23 6.82 3 9.26 3 12c0 4.97 4.03 9 9 9s9-4.03 9-9c0-2.74-1.23-5.18-3.17-6.83z"/></svg>
                         </button>
@@ -677,71 +712,216 @@
                 </div>
                 <div class="video-wrapper">
                     <video id="video-${b.sid}" autoplay playsinline muted></video>
+                    <div id="video-fallback-${b.sid}" class="fallback-video-container" style="display: none;">
+                        <video id="jm-video-${b.sid}" autoplay playsinline muted></video>
+                    </div>
                 </div>
                 <div class="card-footer">
-                    <div class="rtc-status" id="rtc-${b.sid}">Connecting...</div>
-                    <div class="sync-toggle" id="sync-${b.sid}" onclick="toggleSync('${b.sid}')">
-                        <div class="toggle-switch"></div>
-                        <span>Sync Control</span>
+                    <div style="display: flex; gap: 5px; align-items: center;">
+                        <button class="mode-btn" id="btn-webrtc-${b.sid}" onclick="toggleNodeMode('${b.sid}', 'webrtc')">WebRTC</button>
+                        <button class="mode-btn active" id="btn-fallback-${b.sid}" onclick="toggleNodeMode('${b.sid}', 'fallback')">Socket</button>
+                        <button class="icon-btn" onclick="nodes.get('${b.sid}').syncSocket()" title="Sync Socket Stream" style="margin-left:5px;">
+                            <svg viewBox="0 0 24 24" style="width:14px; height:14px;"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+                        </button>
+                    </div>
+                    <div class="rtc-status" id="rtc-${b.sid}">
+                        Connecting...
                     </div>
                 </div>
             `;
             grid.appendChild(card);
             log(`Node ${b.id} initialized`, 'success');
 
+            const videoEl = card.querySelector('video');
+            videoEl.volume = 0;
+
             const nodeData = {
                 sid: b.sid,
                 pc: null,
                 isSync: false,
-                video: card.querySelector('video'),
+                video: videoEl,
+                fallbackContainer: card.querySelector(`#video-fallback-${b.sid}`),
+                statusEl: card.querySelector(`#rtc-${b.sid}`),
+                isFallback: false,
+                jmuxer: null,
+                lastFrameTime: Date.now(),
+                healthCheckInterval: null,
+
+                startFallback: function (manual = false) {
+                    if (this.isFallback && !manual) return;
+
+                    log(`Switching ${b.id} to Socket Video...`, 'info');
+                    this.isFallback = true;
+                    // UI Updates
+                    document.getElementById(`btn-webrtc-${this.sid}`).classList.remove('active');
+                    document.getElementById(`btn-fallback-${this.sid}`).classList.add('active');
+
+                    this.statusEl.textContent = 'Socket (Initializing)';
+                    this.statusEl.className = 'rtc-status';
+
+                    if (this.pc) { this.pc.close(); this.pc = null; }
+
+                    this.video.style.display = 'none';
+                    this.fallbackContainer.style.display = 'flex';
+
+                    // Critical Fix: Re-inject the video element ensuring it exists for JMuxer
+                    this.fallbackContainer.innerHTML = `<video id="jm-video-${this.sid}" autoplay playsinline muted style="max-width: 100%; max-height: 100%;"></video>`;
+
+                    if (this.jmuxer) this.jmuxer.destroy();
+
+                    const self = this;
+                    // Small delay to ensure DOM update
+                    setTimeout(() => {
+                        this.jmuxer = new JMuxer({
+                            node: `jm-video-${this.sid}`,
+                            mode: 'video',
+                            flushingTime: 0, // Zero latency mode
+                            clearBuffer: true,
+                            fps: 30,
+                            debug: false,
+                            onError: function (err) {
+                                log(`Decoder Error for ${self.sid}: ${err}`, 'error');
+                            }
+                        });
+
+                        // Trigger node to start emission and send keyframe
+                        socket.emit('request_fallback', { target: this.sid });
+                        setTimeout(() => {
+                            socket.emit('request_keyframe', { target: this.sid });
+                        }, 500);
+                    }, 10);
+                },
+
+                syncSocket: function () {
+                    if (!this.isFallback) return;
+                    log(`Syncing Socket Stream for ${b.id}...`, 'info');
+                    if (this.jmuxer) this.jmuxer.destroy();
+                    this.fallbackContainer.innerHTML = `<video id="jm-video-${this.sid}" autoplay playsinline muted style="max-width: 100%; max-height: 100%;"></video>`;
+
+                    const self = this;
+                    setTimeout(() => {
+                        this.jmuxer = new JMuxer({
+                            node: `jm-video-${this.sid}`,
+                            mode: 'video',
+                            flushingTime: 0,
+                            clearBuffer: true,
+                            fps: 30,
+                            debug: false,
+                            onError: function (err) {
+                                log(`Decoder Error for ${self.sid}: ${err}`, 'error');
+                            }
+                        });
+                        socket.emit('request_keyframe', { target: this.sid });
+                    }, 10);
+                },
+
+                startWebRTC: function () {
+                    log(`Switching ${b.id} to WebRTC...`, 'info');
+                    this.isFallback = false;
+
+                    if (this.jmuxer) { this.jmuxer.destroy(); this.jmuxer = null; }
+                    socket.emit('stop_fallback', { target: this.sid });
+
+                    this.fallbackContainer.style.display = 'none';
+                    this.video.style.display = 'block';
+
+                    // UI Updates
+                    document.getElementById(`btn-webrtc-${this.sid}`).classList.add('active');
+                    document.getElementById(`btn-fallback-${this.sid}`).classList.remove('active');
+
+                    this.statusEl.textContent = 'WebRTC (Connecting...)';
+                    startStream(this.sid);
+                },
+
+                attachInteraction: function (container) {
+                    const handle = (type, e) => {
+                        e.preventDefault();
+                        handleInteraction(this.sid, type, e, container);
+                    };
+
+                    container.addEventListener('mousedown', (e) => {
+                        handle('mousedown', e);
+                        const move = (me) => handle('mousemove', me);
+                        const up = (ue) => {
+                            window.removeEventListener('mousemove', move);
+                            window.removeEventListener('mouseup', up);
+                            handle('mouseup', ue);
+                        };
+                        window.addEventListener('mousemove', move);
+                        window.addEventListener('mouseup', up);
+                    });
+
+                    container.addEventListener('mousemove', (e) => {
+                        if (e.buttons === 0) handle('mousemove', e);
+                    });
+
+                    container.addEventListener('wheel', (e) => {
+                        handle('wheel', e);
+                    }, { passive: false });
+
+                    container.addEventListener('mouseenter', () => { this._isHovered = true; });
+                    container.addEventListener('mouseleave', () => { this._isHovered = false; });
+                    container.addEventListener('contextmenu', (e) => e.preventDefault());
+                },
+
                 destroy: function () {
+                    clearInterval(this.healthCheckInterval);
                     if (this.pc) this.pc.close();
+                    if (this.jmuxer) this.jmuxer.destroy();
                     card.remove();
                 }
             };
 
-            // Event Listeners for Interaction
-            nodeData.video.addEventListener('mousedown', (e) => {
-                e.preventDefault();
-                const startX = e.clientX;
-                const startY = e.clientY;
-                let lastMove = 0;
-
-                const onMove = (moveEvent) => {
-                    const now = Date.now();
-                    if (now - lastMove > 16) { // ~60fps throttle
-                        handleInteraction(b.sid, 'mousemove', moveEvent);
-                        lastMove = now;
-                    }
-                };
-
-                const onUp = (upEvent) => {
-                    window.removeEventListener('mousemove', onMove);
-                    window.removeEventListener('mouseup', onUp);
-                    handleInteraction(b.sid, 'mouseup', upEvent);
-                };
-
-                window.addEventListener('mousemove', onMove);
-                window.addEventListener('mouseup', onUp);
-                handleInteraction(b.sid, 'mousedown', e);
-            });
-            nodeData.video.addEventListener('contextmenu', (e) => e.preventDefault());
-
+            nodeData.attachInteraction(card.querySelector('.video-wrapper'));
             nodes.set(b.sid, nodeData);
-            startStream(b.sid);
+
+            // Health Check / Self-Healing
+            nodeData.healthCheckInterval = setInterval(() => {
+                const now = Date.now();
+                if (nodeData.isFallback) {
+                    if (now - nodeData.lastFrameTime > 3000) {
+                        nodeData.statusEl.textContent = 'Socket (Lagging)';
+                        nodeData.statusEl.className = 'rtc-status error';
+                        socket.emit('request_keyframe', { target: b.sid });
+                        nodeData.lastFrameTime = now - 1500; // Throttle requests
+                    } else if (now - nodeData.lastFrameTime > 500) {
+                        // Still mostly okay but maybe jittery
+                    }
+                }
+            }, 1000);
+
+            // Default Start Mode
+            if (globalPreferredMode === 'fallback') {
+                nodeData.startFallback();
+            } else {
+                nodeData.startWebRTC();
+            }
         }
 
         async function startStream(sid) {
             const node = nodes.get(sid);
-            if (!node) return;
+            if (!node || node.isFallback) return;
             if (node.pc) node.pc.close();
+
+            const fallbackTimer = setTimeout(() => {
+                if (!node.isFallback && (!node.pc || node.pc.connectionState !== 'connected')) {
+                    log(`WebRTC handshake timed out for ${sid}.`, 'error');
+                    // Only auto-fallback if we really wanted WebRTC but it failed
+                    // But if user forces WebRTC, should we fallback? 
+                    // Let's say yes, for reliability, but maybe show a message.
+                    node.startFallback();
+                }
+            }, FALLBACK_TIMEOUT);
 
             node.pc = new RTCPeerConnection({
                 iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
             });
 
             node.pc.ontrack = (e) => {
+                clearTimeout(fallbackTimer);
                 node.video.srcObject = e.streams[0];
+                node.statusEl.textContent = '✓ WebRTC (Live)';
+                node.statusEl.className = 'rtc-status connected';
                 document.getElementById('stream-dot').classList.add('active');
             };
 
@@ -749,43 +929,25 @@
                 if (e.candidate) socket.emit('ice_candidate', { target: sid, candidate: e.candidate });
             };
 
-            // WebRTC Connection State Monitoring
-            const rtcEl = document.getElementById(`rtc-${sid}`);
-            if (rtcEl) {
-                node.pc.onconnectionstatechange = () => {
-                    switch (node.pc.connectionState) {
-                        case 'connected':
-                            rtcEl.textContent = '✓ Live';
-                            rtcEl.className = 'rtc-status connected';
-                            break;
-                        case 'connecting':
-                            rtcEl.textContent = 'Connecting...';
-                            rtcEl.className = 'rtc-status';
-                            break;
-                        case 'disconnected':
-                            rtcEl.textContent = 'Reconnecting...';
-                            rtcEl.className = 'rtc-status';
-                            // Auto-reconnect after 2s
-                            setTimeout(() => {
-                                if (node.pc.connectionState === 'disconnected') {
-                                    log(`Auto-reconnecting stream for ${sid}...`, 'warning');
-                                    startStream(sid);
-                                }
-                            }, 2000);
-                            break;
-                        case 'failed':
-                            rtcEl.textContent = '✕ Failed';
-                            rtcEl.className = 'rtc-status';
-                            log(`WebRTC failed for ${sid}, attempting restart...`, 'error');
-                            setTimeout(() => startStream(sid), 1000);
-                            break;
-                        case 'closed':
-                            rtcEl.textContent = 'Closed';
-                            rtcEl.className = 'rtc-status';
-                            break;
-                    }
-                };
-            }
+            node.pc.onconnectionstatechange = () => {
+                switch (node.pc.connectionState) {
+                    case 'connected':
+                        clearTimeout(fallbackTimer);
+                        log(`WebRTC connected for ${sid}`, 'success');
+                        break;
+                    case 'failed':
+                        log(`WebRTC failed for ${sid}.`, 'error');
+                        node.startFallback();
+                        break;
+                    case 'disconnected':
+                        setTimeout(() => {
+                            if (node.pc && node.pc.connectionState === 'disconnected') {
+                                node.startFallback();
+                            }
+                        }, 2000);
+                        break;
+                }
+            };
 
             node.pc.addTransceiver('video', { direction: 'recvonly' });
             const offer = await node.pc.createOffer();
@@ -796,17 +958,115 @@
 
         socket.on('answer', async (data) => {
             const node = nodes.get(data.from);
-            if (node && node.pc) {
+            if (node && node.pc && !node.isFallback) {
                 await node.pc.setRemoteDescription(new RTCSessionDescription(data));
             }
         });
 
         socket.on('ice_candidate', async (data) => {
             const node = nodes.get(data.from);
-            if (node && node.pc) {
-                await node.pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+            if (node && node.pc && !node.isFallback) {
+                try {
+                    await node.pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                } catch (e) { console.error("Ice error", e); }
             }
         });
+
+        function handleInteraction(sid, type, e, element) {
+            const node = nodes.get(sid);
+            if (!node) return;
+
+            const el = element || node.video;
+            const rect = el.getBoundingClientRect();
+
+            const x = (e.clientX - rect.left) / rect.width * 1280;
+            const y = (e.clientY - rect.top) / rect.height * 720;
+
+            const data = {
+                target: sid,
+                type: type,
+                x: x,
+                y: y
+            };
+
+            if (type === 'wheel') {
+                data.deltaX = e.deltaX;
+                data.deltaY = e.deltaY;
+            }
+
+            if (node.isSync && masterSid && sid !== masterSid) return;
+
+            socket.emit('control_event', data);
+
+            if (sid === masterSid) {
+                for (const [otherSid, otherNode] of nodes) {
+                    if (otherSid !== masterSid && otherNode.isSync) {
+                        const copy = { ...data, target: otherSid };
+                        socket.emit('control_event', copy);
+                    }
+                }
+            }
+        }
+
+        window.addEventListener('keydown', (e) => {
+            // Priority 1: Focused input
+            if (document.activeElement.tagName === 'INPUT') return;
+
+            // Priority 2: Master broadcast
+            if (masterSid) {
+                const syncTargets = Array.from(nodes.values()).filter(n => n.isSync).map(n => n.sid);
+                if (syncTargets.length > 0) {
+                    socket.emit('control_event', { target: syncTargets, type: 'keydown', key: e.key });
+                    return;
+                }
+            }
+
+            // Priority 3: Hovered node
+            for (const [sid, node] of nodes) {
+                if (node._isHovered) {
+                    socket.emit('control_event', { target: sid, type: 'keydown', key: e.key });
+                    break;
+                }
+            }
+        });
+
+        function navigate(sid, type) {
+            const input = document.getElementById(`url-${sid}`);
+            let url = input ? input.value : '';
+            const data = { target: sid, type: type === 'goto' ? 'navigate' : type, url: url };
+
+            if (sid === masterSid) {
+                const syncTargets = Array.from(nodes.values()).filter(n => n.isSync).map(n => n.sid);
+                data.target = syncTargets;
+            }
+            socket.emit('control_event', data);
+        }
+
+        function log(msg, type = 'info') {
+            const consoleLog = document.getElementById('console-log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+            entry.innerHTML = `<span class="log-time">[${time}]</span> ${msg}`;
+            consoleLog.prepend(entry);
+            if (consoleLog.children.length > 50) consoleLog.removeChild(consoleLog.lastChild);
+        }
+
+        function clearLog() {
+            document.getElementById('console-log').innerHTML = '';
+        }
+
+        function toggleHold(sid, nodeId) {
+            socket.emit('toggle_hold_node', { node_id: nodeId }, (response) => {
+                if (response && response.success) {
+                    const card = document.getElementById(`card-${sid}`);
+                    if (response.is_held) card.classList.add('is-held');
+                    else card.classList.remove('is-held');
+                }
+            });
+        }
+
+        function refreshPage(sid) { socket.emit('refresh_page', { target: sid }); }
 
         function toggleMaster(sid) {
             if (masterSid === sid) {
@@ -816,8 +1076,9 @@
                 if (masterSid) document.getElementById(`card-${masterSid}`).classList.remove('is-master');
                 masterSid = sid;
                 document.getElementById(`card-${sid}`).classList.add('is-master');
-                // Ensure Master is synced
-                if (!nodes.get(sid).isSync) toggleSync(sid);
+                const node = nodes.get(sid);
+                node.isSync = true;
+                document.getElementById(`sync-${sid}`).classList.add('sync-active');
             }
         }
 
@@ -830,157 +1091,26 @@
         }
 
         function syncAll(val) {
-            for (const [sid, node] of nodes) {
+            nodes.forEach((node, sid) => {
                 if (node.isSync !== val) toggleSync(sid);
-            }
-        }
-
-        function connectAll() {
-            for (const sid of nodes.keys()) {
-                startStream(sid);
-            }
+            });
         }
 
         function adminRestartAll() {
-            if (confirm("Are you sure you want to restart ALL browser nodes? All active sessions will be interrupted.")) {
-                socket.emit('admin_restart_all', {});
-                log('Initiating global browser restart...', 'warning');
-            }
+            if (confirm("RESTART ALL NODES?")) socket.emit('admin_restart_all', {});
         }
 
         function fullRestart(sid) {
-            const b = Array.from(nodes.keys()).find(s => s === sid);
-            if (b) {
-                if (currentUser === 'admin') {
-                    socket.emit('admin_restart_node', { target: sid });
-                    log(`Admin triggered full restart for node ${sid}`, 'warning');
-                } else {
-                    // Standard users trigger a restart via offer logic or a dedicated event if we want
-                    // For now, let's use a dedicated event for clarity
-                    socket.emit('restart_browser', { target: sid });
-                    log(`Requesting restart for node ${sid}...`, 'info');
-                }
-            }
+            if (confirm("Restart this node?")) socket.emit('admin_restart_node', { target: sid });
         }
 
-        function navigate(sid, type) {
-            const urlInp = document.getElementById(`url-${sid}`);
-            let url = urlInp ? urlInp.value : '';
-
-            const eventData = { target: sid, type: type === 'goto' ? 'navigate' : type };
-            if (type === 'goto') eventData.url = url;
-
-            // Is this a broadcast from Master?
-            if (sid === masterSid) {
-                const syncTargets = Array.from(nodes.values())
-                    .filter(n => n.isSync)
-                    .map(n => n.sid);
-                eventData.target = syncTargets;
-            }
-
-            socket.emit('control_event', eventData);
-        }
-
-        function handleInteraction(sid, type, e) {
-            const node = nodes.get(sid);
-            if (!node || !node.video) return;
-
-            const rect = node.video.getBoundingClientRect();
-            // Use Math.max/min to keep coordinates within bounds if desired, 
-            // but for dragging sometimes out-of-bounds move is okay.
-            const x = (e.clientX - rect.left) * (node.video.videoWidth / rect.width || 1);
-            const y = (e.clientY - rect.top) * (node.video.videoHeight / rect.height || 1);
-
-            const eventData = { target: sid, type: type, x: x, y: y };
-
-            // Broadcast Logic
-            if (sid === masterSid) {
-                const syncTargets = Array.from(nodes.values())
-                    .filter(n => n.isSync)
-                    .map(n => n.sid);
-                eventData.target = syncTargets;
-            }
-
-            socket.emit('control_event', eventData);
-        }
-
-        window.addEventListener('keydown', (e) => {
-            if (!masterSid) return;
-            if (document.activeElement.tagName === 'INPUT') return;
-
-            const syncTargets = Array.from(nodes.values())
-                .filter(n => n.isSync)
-                .map(n => n.sid);
-
-            socket.emit('control_event', {
-                target: syncTargets,
-                type: 'keydown',
-                key: e.key
-            });
-        });
-        socket.on('control_status', (data) => {
-            log(data.msg, data.type === 'error' ? 'error' : 'info');
-        });
-
-        function log(msg, type = 'info') {
-            const consoleLog = document.getElementById('console-log');
-            const entry = document.createElement('div');
-            entry.className = `log-entry ${type}`;
-            const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-            entry.innerHTML = `<span class="log-time">[${time}]</span> ${msg}`;
-            consoleLog.prepend(entry);
-
-            // Keep status console clean
-            if (consoleLog.children.length > 50) {
-                consoleLog.removeChild(consoleLog.lastChild);
-            }
-        }
-
-        function clearLog() {
-            document.getElementById('console-log').innerHTML = '';
-            log('Log cleared.', 'info');
-        }
-
-        // Initial Log
-        log('System initialized. Waiting for node connection...', 'info');
-
-        // ===== NEW FUNCTIONS =====
-
-        function toggleHold(sid, nodeId) {
-            socket.emit('toggle_hold_node', { node_id: nodeId }, (response) => {
-                if (response && response.success) {
-                    const card = document.getElementById(`card-${sid}`);
-                    if (response.is_held) {
-                        card.classList.add('is-held');
-                        log(`Node ${nodeId} is now HELD (preserved on disconnect)`, 'success');
-                    } else {
-                        card.classList.remove('is-held');
-                        log(`Node ${nodeId} hold RELEASED`, 'info');
-                    }
-                } else {
-                    log(`Failed to toggle hold: ${response?.error || 'Unknown error'}`, 'error');
-                }
-            });
-        }
-
-        function refreshPage(sid) {
-            socket.emit('refresh_page', { target: sid });
-            log(`Page refresh requested for ${sid}`, 'info');
-        }
-
-        // Update node card state when browser_list_update arrives
         function updateNodeState(browserList) {
             browserList.forEach(b => {
                 const card = document.getElementById(`card-${b.sid}`);
                 if (card) {
-                    // Update held status
-                    if (b.is_held) {
-                        card.classList.add('is-held');
-                    } else {
-                        card.classList.remove('is-held');
-                    }
+                    if (b.is_held) card.classList.add('is-held');
+                    else card.classList.remove('is-held');
 
-                    // Update proxy badge
                     const proxyBadge = document.getElementById(`proxy-${b.sid}`);
                     if (proxyBadge && b.proxy_info) {
                         const isDirect = b.proxy_info.includes('Direct');
@@ -990,6 +1120,36 @@
                 }
             });
         }
+
+        // --- Manual Mode Switching ---
+
+        function setGlobalMode(mode) {
+            globalPreferredMode = mode;
+            // Update Global Buttons
+            const buttons = document.querySelectorAll('.global-btn');
+            buttons.forEach(btn => {
+                if (btn.textContent.includes('WebRTC')) {
+                    if (mode === 'webrtc') btn.classList.add('active'); else btn.classList.remove('active');
+                }
+                if (btn.textContent.includes('Socket')) {
+                    if (mode === 'fallback') btn.classList.add('active'); else btn.classList.remove('active');
+                }
+            });
+
+            // Apply to all
+            nodes.forEach((node, sid) => {
+                if (mode === 'webrtc') node.startWebRTC();
+                else node.startFallback(true);
+            });
+        }
+
+        function toggleNodeMode(sid, mode) {
+            const node = nodes.get(sid);
+            if (!node) return;
+            if (mode === 'webrtc') node.startWebRTC();
+            else node.startFallback(true);
+        }
+
     </script>
 </body>
 

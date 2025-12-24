@@ -11,13 +11,13 @@
         },
         "pop": {
             "password": "joepop",
-            "nodes": 2,
-            "expires_at": "2025-12-19T12:07:16.491082"
+            "nodes": 1,
+            "expires_at": "2025-12-24T14:50:54.899205"
         },
         "pk": {
             "password": "joepop",
-            "nodes": 1,
-            "expires_at": "2025-12-19T12:04:02.931851"
+            "nodes": 3,
+            "expires_at": "2025-12-25T02:47:34.794638"
         }
     }
 }

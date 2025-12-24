@@ -13,7 +13,7 @@ logger = logging.getLogger("Server")
 
 app = Quart(__name__)
 app.secret_key = "super-secret-grid-control-key" # For session security
-sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
+sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*', logger=True, engineio_logger=True)
 app.asgi_app = socketio.ASGIApp(sio, app.asgi_app)
 
 # Persistent user storage
@@ -136,6 +136,10 @@ async def index():
                                user=session['user'], 
                                nodes_limit=user_data.get('nodes', 0),
                                expires_at=user_data.get('expires_at'))
+
+@app.route('/test')
+async def test_page():
+    return await render_template('test.html')
 
 @app.route('/admin')
 @login_required
@@ -391,10 +395,10 @@ async def set_user(sid, data):
     user_last_seen[username] = datetime.datetime.now()  # Track last seen
     
     if role == 'admin' or username == 'admin':
-        sio.enter_room(sid, 'role_admin')
+        await sio.enter_room(sid, 'role_admin')
         await broadcast_stats()
     
-    sio.enter_room(sid, f"user_{username}")
+    await sio.enter_room(sid, f"user_{username}")
     await try_assign_nodes(username)
 
 @sio.event
@@ -654,6 +658,37 @@ async def refresh_page(sid, data):
     if is_authorized(sid, target_sid):
         await sio.emit('control_event', {'type': 'reload'}, room=target_sid)
         logger.info(f"Page refresh requested for {target_sid} by {username}")
+
+@sio.on('request_fallback')
+async def request_fallback(sid, data):
+    target = data.get('target')
+    if is_authorized(sid, target):
+        logger.info(f"Fallback requested for node {target}")
+        await sio.emit('request_fallback', {}, room=target)
+
+@sio.on('stop_fallback')
+async def stop_fallback(sid, data):
+    target = data.get('target')
+    if is_authorized(sid, target):
+        await sio.emit('stop_fallback', {}, room=target)
+
+@sio.on('request_keyframe')
+async def request_keyframe(sid, data):
+    target = data.get('target')
+    if is_authorized(sid, target):
+        await sio.emit('request_keyframe', {}, room=target)
+
+@sio.on('video_data')
+async def relay_video(sid, data):
+    """Relay binary video data from Node to User and Admins"""
+    if sid in browsers:
+        # Relay to admins for monitoring
+        await sio.emit('video_frame', {'sid': sid, 'data': data}, room='role_admin')
+        
+        username = browsers[sid].get('in_use_by')
+        if username and username != 'admin':
+            await sio.emit('video_frame', {'sid': sid, 'data': data}, room=f"user_{username}")
+
 
 # --- Background Cleanup Task ---
 
