@@ -678,6 +678,12 @@ async def request_keyframe(sid, data):
     if is_authorized(sid, target):
         await sio.emit('request_keyframe', {}, room=target)
 
+@sio.on('enable_mjpeg')
+async def enable_mjpeg(sid, data):
+    target = data.get('target')
+    if is_authorized(sid, target):
+        await sio.emit('enable_mjpeg', data, room=target)
+
 @sio.on('video_data')
 async def relay_video(sid, data):
     """Relay binary video data from Node to User and Admins"""
@@ -688,6 +694,15 @@ async def relay_video(sid, data):
         username = browsers[sid].get('in_use_by')
         if username and username != 'admin':
             await sio.emit('video_frame', {'sid': sid, 'data': data}, room=f"user_{username}")
+
+@sio.on('mjpeg_data')
+async def relay_mjpeg(sid, data):
+    """Relay MJPEG data"""
+    if sid in browsers:
+        # await sio.emit('mjpeg_frame', {'sid': sid, 'data': data}, room='role_admin')
+        username = browsers[sid].get('in_use_by')
+        if username and username != 'admin':
+            await sio.emit('mjpeg_frame', {'sid': sid, 'data': data}, room=f"user_{username}")
 
 
 # --- Background Cleanup Task ---

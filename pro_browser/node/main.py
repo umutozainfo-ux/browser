@@ -39,14 +39,13 @@ class BrowserVideoTrack(MediaStreamTrack):
         super().__init__()
         self.browser_manager = browser_manager
     async def recv(self):
-        while True:
-            frame = await self.browser_manager.get_latest_frame()
-            if frame: return frame
-            await asyncio.sleep(0.01)
+        # Optimized: get_latest_frame now waits for the event, no polling needed
+        frame = await self.browser_manager.get_latest_frame()
+        return frame
 
 # H.264 Encoder for WebSocket Fallback
 class H264Encoder:
-    def __init__(self, width=1280, height=720, fps=30):
+    def __init__(self, width=1280, height=720, fps=60):
         self.width = width
         self.height = height
         self.fps = fps
@@ -63,11 +62,11 @@ class H264Encoder:
             self.codec.framerate = self.fps
             self.codec.time_base = Fraction(1, 1000) # Use ms timebase
             self.codec.options = {
-                'preset': 'veryfast',  # Slightly better compression than ultrafast
+                'preset': 'ultrafast',
                 'tune': 'zerolatency',
                 'profile': 'baseline',
-                'crf': '23', 
-                'x264opts': 'keyint=30:min-keyint=15:repeat-headers=1:sliced-threads=0'
+                'crf': '28',
+                'x264opts': 'keyint=120:min-keyint=120:repeat-headers=1:sliced-threads=0:sync-lookahead=0:rc-lookahead=0'
             }
             self.codec.open()
         except Exception as e:
@@ -165,46 +164,55 @@ async def request_keyframe(data):
     global force_next_keyframe
     logger.debug("Keyframe requested (Healing)...")
     force_next_keyframe = True
+    browser.force_refresh() # Fix: Ensure next frame is processed
+
+MODE_MJPEG = False
+
+@sio.event
+async def enable_mjpeg(data):
+    global MODE_MJPEG
+    MODE_MJPEG = data.get('enabled', False)
+    logger.info(f"MJPEG Mode set to: {MODE_MJPEG}")
+    browser.force_refresh() # Fix: Ensure immediate update on switch
 
 async def run_fallback_loop():
-    global fallback_active, encoder, force_next_keyframe
+    global fallback_active, encoder, force_next_keyframe, MODE_MJPEG
     logger.info("Fallback encoded loop started.")
     
-    target_interval = 1.0 / 30.0
     last_frame_pts = 0
-    no_frame_count = 0
     
     while True:
         if not fallback_active:
             await asyncio.sleep(0.5)
             continue
             
-        start_time = time.time()
-        
-        # Get raw frame
-        img, pts = browser.get_latest_raw()
-        if img is not None:
-            no_frame_count = 0
-            if pts != last_frame_pts:
-                last_frame_pts = pts
-                # Run encode in executor to avoid blocking event loop
-                data = await asyncio.get_event_loop().run_in_executor(None, encoder.encode, img, force_next_keyframe)
+        try:
+            # Wait for next frame (event driven)
+            await browser.frame_event.wait()
+            
+            if MODE_MJPEG:
+                # MJPEG Path: Ultra Low Latency, High Bandwidth
+                jpeg_bytes = browser.get_latest_jpeg()
+                if jpeg_bytes:
+                     await sio.emit('mjpeg_data', jpeg_bytes)
+            else:
+                # H.264 Path: Low Bandwidth, Higher Latency
+                img, pts = browser.get_latest_raw()
+                if img is not None:
+                    if pts != last_frame_pts:
+                        last_frame_pts = pts
+                        data = await asyncio.get_event_loop().run_in_executor(None, encoder.encode, img, force_next_keyframe)
+                        
+                        if force_next_keyframe: 
+                            force_next_keyframe = False
+                            logger.info("IDR Frame Generated")
+
+                        if data:
+                            await sio.emit('video_data', data)
                 
-                if force_next_keyframe: 
-                    force_next_keyframe = False
-                    logger.info("IDR Frame Generated")
-
-                if data:
-                    logger.debug(f"Emitting {len(data)} bytes of H.264")
-                    await sio.emit('video_data', data)
-        else:
-            no_frame_count += 1
-            if no_frame_count % 30 == 0:
-                logger.warning("No frames available from browser for 1s...")
-
-        # Maintain FPS
-        elapsed = time.time() - start_time
-        await asyncio.sleep(max(0, target_interval - elapsed))
+        except Exception as e:
+            logger.error(f"Fallback loop error: {e}")
+            await asyncio.sleep(0.1)
 
 @sio.event
 async def offer(data):

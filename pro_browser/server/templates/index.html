@@ -720,7 +720,8 @@
                     <div style="display: flex; gap: 5px; align-items: center;">
                         <button class="mode-btn" id="btn-webrtc-${b.sid}" onclick="toggleNodeMode('${b.sid}', 'webrtc')">WebRTC</button>
                         <button class="mode-btn active" id="btn-fallback-${b.sid}" onclick="toggleNodeMode('${b.sid}', 'fallback')">Socket</button>
-                        <button class="icon-btn" onclick="nodes.get('${b.sid}').syncSocket()" title="Sync Socket Stream" style="margin-left:5px;">
+                        <button class="mode-btn" id="btn-mjpeg-${b.sid}" style="background: rgba(234, 179, 8, 0.2); color: #facc15; border-color:rgba(234, 179, 8, 0.4)" onclick="toggleNodeMode('${b.sid}', 'mjpeg')">MJPEG (Fast)</button>
+                        <button class="icon-btn" id="sync-${b.sid}" onclick="nodes.get('${b.sid}').syncSocket()" title="Sync Socket Stream" style="margin-left:5px;">
                             <svg viewBox="0 0 24 24" style="width:14px; height:14px;"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
                         </button>
                     </div>
@@ -743,20 +744,26 @@
                 fallbackContainer: card.querySelector(`#video-fallback-${b.sid}`),
                 statusEl: card.querySelector(`#rtc-${b.sid}`),
                 isFallback: false,
+                isMjpeg: false, // New property to track MJPEG mode
                 jmuxer: null,
+                canvas: null, // New property for MJPEG canvas
+                ctx: null,    // New property for MJPEG canvas context
                 lastFrameTime: Date.now(),
                 healthCheckInterval: null,
 
-                startFallback: function (manual = false) {
-                    if (this.isFallback && !manual) return;
+                startFallback: function (manual = false, useMjpeg = false) {
+                    if (this.isFallback && this.isMjpeg === useMjpeg && !manual) return;
 
-                    log(`Switching ${b.id} to Socket Video...`, 'info');
+                    log(`Switching ${b.id} to Socket (${useMjpeg ? 'MJPEG' : 'H.264'})...`, 'info');
                     this.isFallback = true;
+                    this.isMjpeg = useMjpeg;
+
                     // UI Updates
                     document.getElementById(`btn-webrtc-${this.sid}`).classList.remove('active');
-                    document.getElementById(`btn-fallback-${this.sid}`).classList.add('active');
+                    document.getElementById(`btn-fallback-${this.sid}`).classList[useMjpeg ? 'remove' : 'add']('active');
+                    document.getElementById(`btn-mjpeg-${this.sid}`).classList[useMjpeg ? 'add' : 'remove']('active');
 
-                    this.statusEl.textContent = 'Socket (Initializing)';
+                    this.statusEl.textContent = useMjpeg ? 'MJPEG (Speed)' : 'H.264 (Standard)';
                     this.statusEl.className = 'rtc-status';
 
                     if (this.pc) { this.pc.close(); this.pc = null; }
@@ -764,32 +771,41 @@
                     this.video.style.display = 'none';
                     this.fallbackContainer.style.display = 'flex';
 
-                    // Critical Fix: Re-inject the video element ensuring it exists for JMuxer
-                    this.fallbackContainer.innerHTML = `<video id="jm-video-${this.sid}" autoplay playsinline muted style="max-width: 100%; max-height: 100%;"></video>`;
+                    // Tell Node to switch modes
+                    socket.emit('enable_mjpeg', { target: this.sid, enabled: useMjpeg });
 
-                    if (this.jmuxer) this.jmuxer.destroy();
+                    if (useMjpeg) {
+                        // MJPEG Mode: Canvas Rendering
+                        if (this.jmuxer) { this.jmuxer.destroy(); this.jmuxer = null; }
+                        this.fallbackContainer.innerHTML = `<canvas id="mjpeg-canvas-${this.sid}" width="1280" height="720" style="width: 100%; height: 100%; object-fit: contain;"></canvas>`;
+                        this.canvas = document.getElementById(`mjpeg-canvas-${this.sid}`);
+                        this.ctx = this.canvas.getContext('2d', { alpha: false, desynchronized: true });
+                    } else {
+                        // H.264 Mode: JMuxer
+                        this.canvas = null;
+                        this.ctx = null;
+                        this.fallbackContainer.innerHTML = `<video id="jm-video-${this.sid}" autoplay playsinline muted style="max-width: 100%; max-height: 100%;"></video>`;
 
-                    const self = this;
-                    // Small delay to ensure DOM update
-                    setTimeout(() => {
-                        this.jmuxer = new JMuxer({
-                            node: `jm-video-${this.sid}`,
-                            mode: 'video',
-                            flushingTime: 0, // Zero latency mode
-                            clearBuffer: true,
-                            fps: 30,
-                            debug: false,
-                            onError: function (err) {
-                                log(`Decoder Error for ${self.sid}: ${err}`, 'error');
-                            }
-                        });
-
-                        // Trigger node to start emission and send keyframe
-                        socket.emit('request_fallback', { target: this.sid });
+                        const self = this;
+                        // Small delay to ensure DOM update
                         setTimeout(() => {
-                            socket.emit('request_keyframe', { target: this.sid });
-                        }, 500);
-                    }, 10);
+                            this.jmuxer = new JMuxer({
+                                node: `jm-video-${this.sid}`,
+                                mode: 'video',
+                                flushingTime: 0,
+                                clearBuffer: true,
+                                fps: 60,
+                                debug: false,
+                                onError: function (err) {
+                                    log(`Decoder Error for ${self.sid}: ${err}`, 'error');
+                                }
+                            });
+                        }, 10);
+                    }
+
+                    // Trigger emission
+                    socket.emit('request_fallback', { target: this.sid });
+                    setTimeout(() => socket.emit('request_keyframe', { target: this.sid }), 500);
                 },
 
                 syncSocket: function () {
@@ -805,7 +821,7 @@
                             mode: 'video',
                             flushingTime: 0,
                             clearBuffer: true,
-                            fps: 30,
+                            fps: 60,
                             debug: false,
                             onError: function (err) {
                                 log(`Decoder Error for ${self.sid}: ${err}`, 'error');
@@ -875,28 +891,60 @@
             nodeData.attachInteraction(card.querySelector('.video-wrapper'));
             nodes.set(b.sid, nodeData);
 
-            // Health Check / Self-Healing
+            // Health Check / Self-Healing (StreamHealthMonitor)
             nodeData.healthCheckInterval = setInterval(() => {
                 const now = Date.now();
                 if (nodeData.isFallback) {
-                    if (now - nodeData.lastFrameTime > 3000) {
-                        nodeData.statusEl.textContent = 'Socket (Lagging)';
+                    const lag = now - nodeData.lastFrameTime;
+
+                    if (lag > 2000) {
+                        // Critical Freeze (> 2s) -> Reinint
+                        nodeData.statusEl.textContent = 'FROZEN - Reconnecting...';
                         nodeData.statusEl.className = 'rtc-status error';
+                        log(`Stream frozen for ${b.id}, restarting...`, 'warning');
+                        nodeData.startFallback(true, nodeData.isMjpeg); // Restart same mode
+                        nodeData.lastFrameTime = now; // Reset to avoid loop
+                    }
+                    else if (lag > 500) {
+                        // Minor Freeze -> Request Keyframe / data
+                        nodeData.statusEl.textContent = 'Lagging...';
+                        nodeData.statusEl.className = 'rtc-status warning';
                         socket.emit('request_keyframe', { target: b.sid });
-                        nodeData.lastFrameTime = now - 1500; // Throttle requests
-                    } else if (now - nodeData.lastFrameTime > 500) {
-                        // Still mostly okay but maybe jittery
+                    }
+                    else {
+                        nodeData.statusEl.textContent = nodeData.isMjpeg ? 'MJPEG (Live)' : 'H.264 (Live)';
+                        nodeData.statusEl.className = 'rtc-status connected';
                     }
                 }
             }, 1000);
 
             // Default Start Mode
             if (globalPreferredMode === 'fallback') {
-                nodeData.startFallback();
+                nodeData.startFallback(false, false); // Default to H.264, user can toggle
             } else {
                 nodeData.startWebRTC();
             }
         }
+
+        // MJPEG Frame Handler
+        socket.on('mjpeg_frame', async (msg) => {
+            const node = nodes.get(msg.sid);
+            if (node && node.isFallback && node.isMjpeg && node.canvas && node.ctx) {
+                try {
+                    // Create Bitmap from Blob for high perf
+                    const blob = new Blob([new Uint8Array(msg.data)], { type: 'image/jpeg' });
+                    const bitmap = await createImageBitmap(blob);
+
+                    // Draw (Scale to canvas)
+                    node.ctx.drawImage(bitmap, 0, 0, node.canvas.width, node.canvas.height);
+                    bitmap.close(); // Important: release memory
+
+                    node.lastFrameTime = Date.now();
+                } catch (e) {
+                    console.error("MJPEG Render error", e);
+                }
+            }
+        });
 
         async function startStream(sid) {
             const node = nodes.get(sid);
@@ -995,6 +1043,13 @@
             }
 
             if (node.isSync && masterSid && sid !== masterSid) return;
+
+            // Throttling for mousemove
+            if (type === 'mousemove') {
+                const now = Date.now();
+                if (node._lastMove && now - node._lastMove < 16) return; // ~60fps cap
+                node._lastMove = now;
+            }
 
             socket.emit('control_event', data);
 
@@ -1147,7 +1202,8 @@
             const node = nodes.get(sid);
             if (!node) return;
             if (mode === 'webrtc') node.startWebRTC();
-            else node.startFallback(true);
+            else if (mode === 'mjpeg') node.startFallback(true, true); // Manual, useMjpeg=true
+            else node.startFallback(true, false); // Manual, useMjpeg=false (H.264)
         }
 
     </script>

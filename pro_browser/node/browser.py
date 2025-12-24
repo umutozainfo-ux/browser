@@ -24,6 +24,7 @@ class BrowserManager:
         self.height = 720
         self.lock = asyncio.Lock()
         self.input_lock = asyncio.Lock()
+        self.frame_event = asyncio.Event()
 
     async def start(self, proxy: Optional[dict] = None):
         logger.info("Wait for lock to START browser...")
@@ -90,7 +91,7 @@ class BrowserManager:
             logger.info("Starting CDP Screencast...")
             await self.cdp.send('Page.startScreencast', {
                 'format': 'jpeg',
-                'quality': 60,
+                'quality': 30, # Low quality for speed as requested
                 'maxWidth': self.width,
                 'maxHeight': self.height,
                 'everyNthFrame': 1
@@ -110,30 +111,57 @@ class BrowserManager:
     def _on_screencast_frame(self, data):
         """Handle incoming CDP frame with EPIPE protection"""
         if not self.running or not self.cdp: return
-        try:
-            asyncio.create_task(self._safe_ack(data.get('sessionId')))
-            if not data.get('data'): return
+        
+        session_id = data.get('sessionId')
+        asyncio.create_task(self._safe_ack(session_id))
+        
+        raw_data = data.get('data')
+        # Duplicate detection (Send only changed)
+        if hasattr(self, '_last_jpeg') and self._last_jpeg == raw_data:
+            return
             
-            # Log frame reception (debug)
-            if not hasattr(self, '_frame_count'): self._frame_count = 0
-            self._frame_count += 1
-            if self._frame_count % 30 == 1:
-                logger.debug(f"Screencast frame received ({self._frame_count})")
+        self._last_jpeg = raw_data # Store raw B64 for MJPEG mode
+        
+        try:
+            # Notify waiters (both MJPEG and H264 loops wait on this)
+            self.frame_event.set()
+            self.frame_event.clear()
+            
+            # Offload heavy decoding for H.264 path only if needed?
+            # Actually, let's just trigger the event. The H.264 loop will call get_latest_raw which triggers decoding if null.
+            # But wait, we need to decode to get the 'frame' object for H.264. 
+            # Let's fire-and-forget the decoder for H.264 readiness, but MJPEG can grab raw bytes instantly.
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._process_frame_in_thread(raw_data))
+        except Exception as e:
+             logger.error(f"Frame dispatch error: {e}")
 
-            image_data = base64.b64decode(data['data'])
+    async def _process_frame_in_thread(self, b64_data):
+        try:
+            # Run CPU-bound work in executor
+            loop = asyncio.get_running_loop()
+            frame = await loop.run_in_executor(None, self._decode_frame, b64_data)
+            if frame: self.last_frame = frame
+        except Exception as e:
+            logger.error(f"Async frame processing error: {e}")
+
+    def _decode_frame(self, b64_data):
+        # This runs in a separate thread
+        try:
+            image_data = base64.b64decode(b64_data)
             import cv2
             nparr = np.frombuffer(image_data, np.uint8)
             img_np = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            if img_np is None: return
-            img_rgb = cv2.cvtColor(img_np, cv2.COLOR_BGR2RGB)
-            frame = VideoFrame.from_ndarray(img_rgb, format='rgb24')
+            if img_np is None: return None
+            
+            # Optimization: Keep in BGR
+            frame = VideoFrame.from_ndarray(img_np, format='bgr24')
             from fractions import Fraction
             frame.pts = int(time.time() * 90000)
             frame.time_base = Fraction(1, 90000)
-            self.last_frame = frame
+            return frame
         except Exception as e:
-            if "EPIPE" not in str(e):
-                logger.error(f"Frame handling error: {e}", exc_info=True)
+            return None
 
     async def _safe_ack(self, session_id):
         if not self.running or not self.cdp or not session_id: return
@@ -143,11 +171,29 @@ class BrowserManager:
             pass
 
     async def get_latest_frame(self) -> Optional[VideoFrame]:
+        """Wait for the next frame efficiently"""
+        await self.frame_event.wait()
         return self.last_frame
+
+    def force_refresh(self):
+        """Force next frame to be processed even if duplicate"""
+        if hasattr(self, '_last_jpeg'):
+             delattr(self, '_last_jpeg')
+        if hasattr(self, '_last_raw_data'): # Cleanup
+             delattr(self, '_last_raw_data')
+
+    def get_latest_jpeg(self):
+        """Get raw JPEG bytes (base64 or binary) for MJPEG stream"""
+        if hasattr(self, '_last_jpeg') and self._last_jpeg:
+            # Return raw base64 string directly - simplest for Text websocket, 
+            # but binary is better. Let's return bytes.
+            return base64.b64decode(self._last_jpeg)
+        return None
 
     def get_latest_raw(self):
         """Return the latest frame as a numpy array with timestamp, avoiding async overhead"""
         if self.last_frame:
+            # It's already BGR24 in our optimization
             return self.last_frame.to_ndarray(format='bgr24'), self.last_frame.pts
         return None, None
 

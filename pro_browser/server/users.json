@@ -16,7 +16,7 @@
         },
         "pk": {
             "password": "joepop",
-            "nodes": 3,
+            "nodes": 2,
             "expires_at": "2025-12-25T02:47:34.794638"
         }
     }
