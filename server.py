@@ -141,6 +141,9 @@ async def dashboard_page():
         .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
         .selected-card { border-color: #3b82f6 !important; background: rgba(59, 130, 246, 0.1) !important; }
+        .mode-toggle { display: flex; background: rgba(0,0,0,0.3); border-radius: 8px; padding: 2px; }
+        .mode-btn { padding: 2px 8px; border-radius: 6px; font-size: 8px; font-weight: 800; color: #64748b; transition: all 0.2s; }
+        .mode-btn.active { background: #3b82f6; color: white; }
     </style>
 </head>
 <body class="min-h-screen flex flex-col font-sans">
@@ -223,6 +226,7 @@ async def dashboard_page():
         </div>
         <div class="flex-1 relative flex items-center justify-center overflow-hidden bg-black p-4">
             <canvas id="mainView" class="max-w-full max-h-full shadow-2xl bg-slate-900 rounded-lg cursor-crosshair"></canvas>
+            <video id="mainVideo" class="hidden max-w-full max-h-full shadow-2xl bg-slate-900 rounded-lg cursor-crosshair" autoplay playsinline></video>
             <div id="latencyIndicator" class="absolute bottom-6 right-6 px-3 py-1 bg-black/50 text-[10px] text-green-500 font-mono rounded-lg border border-green-500/20">5ms</div>
         </div>
     </div>
@@ -313,7 +317,11 @@ async def dashboard_page():
                         <span class="text-[10px] text-slate-600">/</span>
                         <span class="text-xs font-mono text-white">${bid}</span>
                     </div>
-                    <div class="flex items-center gap-1">
+                    <div class="flex items-center gap-2">
+                         <div class="mode-toggle">
+                            <button id="btn-rtc-${safeId}" onclick="switchMode('${nid}', '${bid}', 'webrtc')" class="mode-btn active">RTC</button>
+                            <button id="btn-ws-${safeId}" onclick="switchMode('${nid}', '${bid}', 'ws')" class="mode-btn">WS</button>
+                         </div>
                          <button onclick="openFullView('${nid}', '${bid}')" class="p-1.5 hover:bg-white/10 rounded-lg text-slate-400 opacity-0 group-hover:opacity-100 transition" title="Enlarge">
                             <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 4a1 1 0 011-1h4a1 1 0 010 2H6.414l2.293 2.293a1 1 0 11-1.414 1.414L5 6.414V8a1 1 0 01-2 0V4zm9 1a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-2 0V6.414l-2.293 2.293a1 1 0 11-1.414-1.414L13.586 5H12zm-9 7a1 1 0 012 0v1.586l2.293-2.293a1 1 0 111.414 1.414L4.414 15H6a1 1 0 010 2H2a1 1 0 01-1-1v-4zm11-1a1 1 0 011.414 1.414L15.586 15H17a1 1 0 110 2h-4a1 1 0 01-1-1v-4a1 1 0 011-1z" clip-rule="evenodd" /></svg>
                         </button>
@@ -324,6 +332,7 @@ async def dashboard_page():
                 </div>
                 <div class="aspect-video bg-black relative overflow-hidden cursor-crosshair">
                     <canvas id="view-${safeId}" class="w-full h-full object-contain"></canvas>
+                    <video id="video-${safeId}" class="hidden w-full h-full object-contain" autoplay playsinline></video>
                     <div class="absolute inset-0 bg-primary/5 pointer-events-none opacity-0 group-hover:opacity-100 transition"></div>
                 </div>
                 <div class="p-3 bg-white/5 flex gap-2">
@@ -338,8 +347,11 @@ async def dashboard_page():
             const ws = new WebSocket(wsUrl);
             const ctx = canvas.getContext('2d');
 
-            const inst = { nid, bid, ws, canvas, ctx };
+            const inst = { nid, bid, ws, canvas, ctx, mode: 'webrtc', video: document.getElementById('video-' + safeId) };
             browserInstances.push(inst);
+
+            // WebRTC Logic
+            setupWebRTC(inst, nodeUrl);
 
             let lastDraw = 0;
             ws.onmessage = (e) => {
@@ -374,19 +386,35 @@ async def dashboard_page():
                 }
             };
 
-            // Event Hooks for Multi-Control
-            canvas.onmousedown = (e) => handleCanvasEvent('mousedown', b, e);
-            canvas.onmouseup = (e) => handleCanvasEvent('mouseup', b, e);
-            canvas.onmousemove = (e) => handleCanvasEvent('mousemove', b, e);
-            canvas.onwheel = (e) => handleCanvasEvent('scroll', b, e);
+            // Event Hooks for Multi-Control (attach to BOTH canvas and video)
+            const video = inst.video;
+            
+            // Canvas events
+            canvas.onmousedown = (e) => handleCanvasEvent('mousedown', {nid, bid}, e);
+            canvas.onmouseup = (e) => handleCanvasEvent('mouseup', {nid, bid}, e);
+            canvas.onmousemove = (e) => handleCanvasEvent('mousemove', {nid, bid}, e);
+            canvas.onclick = (e) => handleCanvasEvent('click', {nid, bid}, e);
+            canvas.onwheel = (e) => handleCanvasEvent('scroll', {nid, bid}, e);
+            
+            // Video events (same handlers)
+            video.onmousedown = (e) => handleCanvasEvent('mousedown', {nid, bid}, e);
+            video.onmouseup = (e) => handleCanvasEvent('mouseup', {nid, bid}, e);
+            video.onmousemove = (e) => handleCanvasEvent('mousemove', {nid, bid}, e);
+            video.onclick = (e) => handleCanvasEvent('click', {nid, bid}, e);
+            video.onwheel = (e) => handleCanvasEvent('scroll', {nid, bid}, e);
         }
 
         function handleCanvasEvent(type, target, e) {
             e.preventDefault();
-            const canvas = e.target;
-            const rect = canvas.getBoundingClientRect();
-            const scaleX = canvas.width / rect.width;
-            const scaleY = canvas.height / rect.height;
+            const el = e.target;
+            const rect = el.getBoundingClientRect();
+            
+            // Get actual media resolution
+            const mediaWidth = el.tagName === 'VIDEO' ? el.videoWidth : el.width;
+            const mediaHeight = el.tagName === 'VIDEO' ? el.videoHeight : el.height;
+
+            const scaleX = mediaWidth / rect.width;
+            const scaleY = mediaHeight / rect.height;
             const x = (e.clientX - rect.left) * scaleX;
             const y = (e.clientY - rect.top) * scaleY;
 
@@ -464,26 +492,43 @@ async def dashboard_page():
 
         function openFullView(nid, bid) {
             activeFullView = { nid, bid };
+            const inst = browserInstances.find(i => i.nid === nid && i.bid === bid);
+            if (!inst) return;
+
             document.getElementById('fullViewModal').classList.remove('hidden');
             document.getElementById('currentBrowserTitle').innerText = `${nid} / ${bid}`;
             
             const mainCv = document.getElementById('mainView');
-            // Pipe events from main canvas
-            mainCv.onmousedown = (e) => handleCanvasEvent('mousedown', activeFullView, e);
-            mainCv.onmouseup = (e) => handleCanvasEvent('mouseup', activeFullView, e);
-            mainCv.onmousemove = (e) => handleCanvasEvent('mousemove', activeFullView, e);
-            mainCv.onwheel = (e) => handleCanvasEvent('scroll', activeFullView, e);
+            const mainVid = document.getElementById('mainVideo');
+
+            if (inst.mode === 'webrtc') {
+                mainCv.classList.add('hidden');
+                mainVid.classList.remove('hidden');
+                mainVid.srcObject = inst.video.srcObject;
+            } else {
+                mainCv.classList.remove('hidden');
+                mainVid.classList.add('hidden');
+            }
+
+            // Pipe events from main elements
+            const activeEl = inst.mode === 'webrtc' ? mainVid : mainCv;
+            activeEl.onmousedown = (e) => handleCanvasEvent('mousedown', activeFullView, e);
+            activeEl.onmouseup = (e) => handleCanvasEvent('mouseup', activeFullView, e);
+            activeEl.onmousemove = (e) => handleCanvasEvent('mousemove', activeFullView, e);
+            activeEl.onwheel = (e) => handleCanvasEvent('scroll', activeFullView, e);
             
             window.onkeydown = (e) => {
-                if(document.activeElement.id === 'modalUrlInput' || document.activeElement.id === 'globalUrlInput') return;
+                if(document.activeElement.tagName === 'INPUT') return;
                 if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Tab','Backspace','Enter'].includes(e.key)) e.preventDefault();
                 
                 const payload = { type: 'key', key: e.key };
                 if (controlMode === 'all') {
-                    browserInstances.forEach(inst => inst.ws.send(JSON.stringify(payload)));
-                } else {
+                    browserInstances.forEach(inst => {
+                        if (inst.ws.readyState === WebSocket.OPEN) inst.ws.send(JSON.stringify(payload));
+                    });
+                } else if (activeFullView) {
                     const inst = browserInstances.find(i => i.nid === activeFullView.nid && i.bid === activeFullView.bid);
-                    inst?.ws.send(JSON.stringify(payload));
+                    if (inst && inst.ws.readyState === WebSocket.OPEN) inst.ws.send(JSON.stringify(payload));
                 }
             };
         }
@@ -522,6 +567,67 @@ async def dashboard_page():
                 try { await fetch(`${node.url}/close_all`, { method: 'POST' }); } catch(e){}
             }
             setTimeout(fetchSystemState, 1000);
+        }
+
+        async function setupWebRTC(inst, nodeUrl) {
+            const pc = new RTCPeerConnection();
+            inst.pc = pc;
+
+            pc.ontrack = (event) => {
+                inst.video.srcObject = event.streams[0];
+                if (activeFullView && activeFullView.nid === inst.nid && activeFullView.bid === inst.bid) {
+                    document.getElementById('mainVideo').srcObject = event.streams[0];
+                }
+            };
+
+            const offer = await pc.createOffer({ offerToReceiveVideo: true });
+            await pc.setLocalDescription(offer);
+
+            try {
+                const response = await fetch(`${nodeUrl}/api/offer/${inst.bid}`, {
+                    method: 'POST',
+                    body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                const answer = await response.json();
+                await pc.setRemoteDescription(new RTCSessionDescription(answer));
+                switchMode(inst.nid, inst.bid, 'webrtc');
+            } catch (e) {
+                switchMode(inst.nid, inst.bid, 'ws');
+            }
+        }
+
+        function switchMode(nid, bid, mode) {
+            const inst = browserInstances.find(i => i.nid === nid && i.bid === bid);
+            if (!inst) return;
+            inst.mode = mode;
+            
+            const safeId = (nid + '-' + bid).replace(/:/g, '-');
+            const btnRtc = document.getElementById('btn-rtc-' + safeId);
+            const btnWs = document.getElementById('btn-ws-' + safeId);
+            const canvas = document.getElementById('view-' + safeId);
+            const video = document.getElementById('video-' + safeId);
+
+            if (mode === 'webrtc') {
+                btnRtc.classList.add('active');
+                btnWs.classList.remove('active');
+                video.classList.remove('hidden');
+                canvas.classList.add('hidden');
+                if (activeFullView && activeFullView.nid === nid && activeFullView.bid === bid) {
+                     document.getElementById('mainView').classList.add('hidden');
+                     document.getElementById('mainVideo').classList.remove('hidden');
+                     document.getElementById('mainVideo').srcObject = video.srcObject;
+                }
+            } else {
+                btnWs.classList.add('active');
+                btnRtc.classList.remove('active');
+                canvas.classList.remove('hidden');
+                video.classList.add('hidden');
+                if (activeFullView && activeFullView.nid === nid && activeFullView.bid === bid) {
+                     document.getElementById('mainView').classList.remove('hidden');
+                     document.getElementById('mainVideo').classList.add('hidden');
+                }
+            }
         }
 
         setInterval(fetchSystemState, 3000);

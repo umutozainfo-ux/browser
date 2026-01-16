@@ -6,11 +6,18 @@ import asyncio
 import base64
 import platform
 import httpx
+import io
+from PIL import Image
 from typing import Dict, Any, Optional, List
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from playwright.async_api import async_playwright, Browser, Page, BrowserContext
+from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
+from aiortc.contrib.media import MediaPlayer
+from av import VideoFrame
+import fractions
+from fastapi.middleware.cors import CORSMiddleware
 
 # Stealth/Undetected imports
 try:
@@ -91,6 +98,16 @@ STEALTH_JS = r"""
 # BROWSER INSTANCE
 # ======================================================================
 
+class BrowserVideoTrack(MediaStreamTrack):
+    kind = "video"
+    def __init__(self):
+        super().__init__()
+        self.queue = asyncio.Queue(maxsize=2)
+
+    async def recv(self):
+        frame = await self.queue.get()
+        return frame
+
 class BrowserInstance:
     def __init__(self, browser_id: str):
         self.id = browser_id
@@ -99,8 +116,11 @@ class BrowserInstance:
         self.context = None
         self.page = None
         self.active_websockets: List[WebSocket] = []
+        self.peer_connections = set()
+        self.active_tracks = set() # Set[BrowserVideoTrack]
         self.is_running = False
-        self._capture_task = None
+        self.cdp = None
+        self._timestamp = 0
 
     async def start(self):
         if ud_async_playwright:
@@ -157,24 +177,39 @@ class BrowserInstance:
         self.cdp.on("Page.screencastFrame", self._on_screencast_frame)
 
     async def _on_screencast_frame(self, data):
-        """Callback for CDP screencast frames - very efficient"""
+        """Callback for CDP screencast frames"""
         try:
-            # Acknowledge the frame immediately to keep the stream moving
             await self.cdp.send("Page.screencastFrameAck", {"sessionId": data["sessionId"]})
+            b64_data = data["data"]
+            image_bytes = base64.b64decode(b64_data)
             
+            # 1. Prepare frame for WebRTC
+            if self.active_tracks:
+                try:
+                    img = Image.open(io.BytesIO(image_bytes))
+                    new_frame = VideoFrame.from_image(img)
+                    new_frame.pts = self._timestamp
+                    new_frame.time_base = fractions.Fraction(1, 90000)
+                    self._timestamp += 3000
+
+                    # Push to all active WebRTC tracks
+                    for track in list(self.active_tracks):
+                        if track.queue.full():
+                            try: track.queue.get_nowait()
+                            except: pass
+                        track.queue.put_nowait(new_frame)
+                except Exception as e:
+                    print(f"Frame encoding error: {e}")
+            
+            # 2. Update WebSockets
             if self.active_websockets:
-                b64_data = data["data"]
                 msg = json.dumps({"type": "frame", "data": b64_data})
-                
-                # Send to all connected observers
                 for ws in list(self.active_websockets):
-                    try:
-                        await ws.send_text(msg)
-                    except:
-                        if ws in self.active_websockets:
-                            self.active_websockets.remove(ws)
-        except Exception:
-            pass
+                    try: await ws.send_text(msg)
+                    except: 
+                        if ws in self.active_websockets: self.active_websockets.remove(ws)
+        except Exception as e:
+            print(f"Screencast processing error: {e}")
 
     async def stop(self):
         self.is_running = False
@@ -191,6 +226,14 @@ class BrowserInstance:
 # ======================================================================
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 browsers: Dict[str, BrowserInstance] = {}
 
 async def register_with_server():
@@ -238,6 +281,39 @@ async def close_all_browsers():
         await browsers[bid].stop()
         del browsers[bid]
     return {"status": "all_closed"}
+
+@app.post("/api/offer/{browser_id}")
+async def webrtc_offer(browser_id: str, request: Request):
+    print(f"Received WebRTC offer for {browser_id}")
+    if browser_id not in browsers:
+        return {"error": "not_found"}
+    
+    params = await request.json()
+    offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
+    
+    pc = RTCPeerConnection()
+    instance = browsers[browser_id]
+    instance.peer_connections.add(pc)
+    
+    # Create per-session track
+    track = BrowserVideoTrack()
+    instance.active_tracks.add(track)
+    pc.addTrack(track)
+    
+    @pc.on("connectionstatechange")
+    async def on_connectionstatechange():
+        if pc.connectionState == "failed" or pc.connectionState == "closed":
+            instance.peer_connections.discard(pc)
+            instance.active_tracks.discard(track)
+    
+    await pc.setRemoteDescription(offer)
+    answer = await pc.createAnswer()
+    await pc.setLocalDescription(answer)
+    
+    return {
+        "sdp": pc.localDescription.sdp,
+        "type": pc.localDescription.type
+    }
 
 @app.websocket("/ws/{browser_id}")
 async def websocket_endpoint(websocket: WebSocket, browser_id: str):
