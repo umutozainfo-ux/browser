@@ -117,9 +117,11 @@ class BrowserInstance:
             "--ignore-gpu-blocklist",
             "--disable-infobars",
             "--window-position=0,0",
+            "--disable-canvas-aa", # Performance
+            "--disable-2d-canvas-clip-utils", # Performance
+            "--disable-gl-drawing-for-tests",
         ]
         
-        # On Windows Headless, GPU can cause blank screens
         if Config.IS_WINDOWS and Config.HEADLESS:
             args.append("--disable-gpu")
 
@@ -134,44 +136,51 @@ class BrowserInstance:
             viewport=Config.VIEWPORT, 
             user_agent=ua,
             device_scale_factor=1,
-            is_mobile=False,
-            has_touch=False,
         )
         
         await self.context.add_init_script(STEALTH_JS)
         self.page = await self.context.new_page()
-        
-        # Ensure we set a background color just in case
         await self.page.add_init_script("document.documentElement.style.background = '#000';")
         
         await self.page.goto("https://www.google.com", wait_until="networkidle")
         self.is_running = True
-        self._capture_task = asyncio.create_task(self._stream_loop())
+        
+        # Start High-Performance CDP Screencast
+        self.cdp = await self.page.context.new_cdp_session(self.page)
+        await self.cdp.send("Page.startScreencast", {
+            "format": "jpeg",
+            "quality": 40, # Lower quality for much higher speed
+            "maxWidth": 1280,
+            "maxHeight": 720,
+            "everyNthFrame": 1
+        })
+        self.cdp.on("Page.screencastFrame", self._on_screencast_frame)
 
-    async def _stream_loop(self):
-        delay = 1.0 / Config.FPS
-        while self.is_running:
-            try:
-                if self.active_websockets:
-                    # Capturing with type="jpeg" helps on Windows headless
-                    screenshot = await self.page.screenshot(type="jpeg", quality=60, full_page=False)
-                    b64_data = base64.b64encode(screenshot).decode('utf-8')
-                    msg = json.dumps({"type": "frame", "data": b64_data})
-                    
-                    for ws in self.active_websockets[:]:
-                        try: 
-                            await ws.send_text(msg)
-                        except: 
-                            if ws in self.active_websockets:
-                                self.active_websockets.remove(ws)
-            except Exception as e:
-                # print(f"Capture error: {e}")
-                pass
-            await asyncio.sleep(delay)
+    async def _on_screencast_frame(self, data):
+        """Callback for CDP screencast frames - very efficient"""
+        try:
+            # Acknowledge the frame immediately to keep the stream moving
+            await self.cdp.send("Page.screencastFrameAck", {"sessionId": data["sessionId"]})
+            
+            if self.active_websockets:
+                b64_data = data["data"]
+                msg = json.dumps({"type": "frame", "data": b64_data})
+                
+                # Send to all connected observers
+                for ws in list(self.active_websockets):
+                    try:
+                        await ws.send_text(msg)
+                    except:
+                        if ws in self.active_websockets:
+                            self.active_websockets.remove(ws)
+        except Exception:
+            pass
 
     async def stop(self):
         self.is_running = False
-        if self._capture_task: self._capture_task.cancel()
+        try:
+            if hasattr(self, 'cdp'): await self.cdp.detach()
+        except: pass
         if self.page: await self.page.close()
         if self.context: await self.context.close()
         if self.browser: await self.browser.close()
@@ -213,6 +222,22 @@ async def create_browser():
     await instance.start()
     browsers[browser_id] = instance
     return {"id": browser_id}
+
+@app.post("/close/{browser_id}")
+async def close_browser(browser_id: str):
+    if browser_id in browsers:
+        await browsers[browser_id].stop()
+        del browsers[browser_id]
+        return {"status": "closed"}
+    return {"status": "not_found"}
+
+@app.post("/close_all")
+async def close_all_browsers():
+    ids = list(browsers.keys())
+    for bid in ids:
+        await browsers[bid].stop()
+        del browsers[bid]
+    return {"status": "all_closed"}
 
 @app.websocket("/ws/{browser_id}")
 async def websocket_endpoint(websocket: WebSocket, browser_id: str):
