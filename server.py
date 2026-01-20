@@ -605,7 +605,6 @@ async def dashboard():
             mv.srcObject = null;
         }
 
-        let lastMove = 0;
         function navAction(key, type) {
             sendMsg(key, { type });
         }
@@ -621,25 +620,32 @@ async def dashboard():
 
         let focusedKey = null;
 
+        let isDragging = false;
+        let lastMove = 0;
+
         function bindSurfaceEvents(el, key) {
-            const handler = (type, e) => {
+            const getCoords = (e) => {
                 const rect = el.getBoundingClientRect();
                 const scaleX = 1280 / rect.width;
                 const scaleY = 720 / rect.height;
-                const x = (e.clientX - rect.left) * scaleX;
-                const y = (e.clientY - rect.top) * scaleY;
-                
+                return {
+                    x: Math.round((e.clientX - rect.left) * scaleX),
+                    y: Math.round((e.clientY - rect.top) * scaleY)
+                };
+            };
+
+            const handler = (type, e) => {
+                const coords = getCoords(e);
                 const payload = { 
                     type, 
-                    x: Math.round(x), 
-                    y: Math.round(y), 
+                    x: coords.x, 
+                    y: coords.y, 
                     deltaY: e.deltaY ? Math.round(e.deltaY * 1.5) : 0,
-                    key: e.key 
+                    key: e.key,
+                    button: e.button === 2 ? "right" : "left"
                 };
 
-                // Send to card being clicked
                 sendMsg(key, payload);
-                
                 if (followMode && selectedKeys.has(key)) {
                     selectedKeys.forEach(k => { if (k !== key) sendMsg(k, payload); });
                 }
@@ -647,12 +653,32 @@ async def dashboard():
 
             el.onmousedown = (e) => { 
                 focusedKey = key; 
+                isDragging = true;
                 el.focus(); 
-                handler('mousedown', e); 
+                handler('mousedown', e);
+                
+                // Track globally to handle dragging outside the element
+                const onGlobalMove = (me) => {
+                    if (!isDragging) return;
+                    const now = performance.now();
+                    if (now - lastMove < 25) return; // ~40fps throttle
+                    lastMove = now;
+                    handler('mousemove', me);
+                };
+                
+                const onGlobalUp = (ue) => {
+                    isDragging = false;
+                    handler('mouseup', ue);
+                    window.removeEventListener('mousemove', onGlobalMove);
+                    window.removeEventListener('mouseup', onGlobalUp);
+                };
+                
+                window.addEventListener('mousemove', onGlobalMove);
+                window.addEventListener('mouseup', onGlobalUp);
             };
-            el.onmouseup = (e) => handler('mouseup', e);
-            el.onmousemove = (e) => handler('mousemove', e);
-            el.onclick = (e) => handler('click', e);
+
+            el.onclick = (e) => { if (!isDragging) handler('click', e); };
+            el.oncontextmenu = (e) => { e.preventDefault(); handler('click', { ...e, button: 2 }); };
             el.onwheel = (e) => { e.preventDefault(); handler('scroll', e); };
             el.tabIndex = 0; 
         }

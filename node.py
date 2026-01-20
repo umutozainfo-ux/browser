@@ -211,14 +211,16 @@ class BrowserInstance:
             if x is not None: x = max(0, min(int(x), Config.WIDTH))
             if y is not None: y = max(0, min(int(y), Config.HEIGHT))
             
+            button = action.get("button", "left")
+            
             if atype == "mousemove":
                 await self.page.mouse.move(x, y)
             elif atype == "mousedown":
-                await self.page.mouse.down()
+                await self.page.mouse.down(button=button)
             elif atype == "mouseup":
-                await self.page.mouse.up()
+                await self.page.mouse.up(button=button)
             elif atype == "click":
-                await self.page.mouse.click(x, y)
+                await self.page.mouse.click(x, y, button=button)
             elif atype == "key":
                 key = action.get("key")
                 if key:
