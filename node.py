@@ -6,241 +6,261 @@ import asyncio
 import base64
 import platform
 import httpx
-import io
-from PIL import Image
+import cv2
+import numpy as np
+import threading
+import logging
 from typing import Dict, Any, Optional, List
+from concurrent.futures import ThreadPoolExecutor
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi.middleware.cors import CORSMiddleware
 from playwright.async_api import async_playwright, Browser, Page, BrowserContext
-from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
-from aiortc.contrib.media import MediaPlayer
+from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack, RTCConfiguration, RTCIceServer, RTCDataChannel
 from av import VideoFrame
 import fractions
-from fastapi.middleware.cors import CORSMiddleware
 
-# Stealth/Undetected imports
-try:
-    import undetected_playwright as undpw
-    ud_async_playwright = getattr(undpw, "async_playwright", None)
-except Exception:
-    ud_async_playwright = None
-
-# ======================================================================
-# CONFIG
-# ======================================================================
+# Setup Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger("StealthNode")
 
 class Config:
-    NODE_ID = str(uuid.uuid4())[:8]
+    NODE_ID = os.getenv("NODE_ID", f"node-{str(uuid.uuid4())[:6]}")
     SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8000")
     NODE_HOST = os.getenv("NODE_HOST", "localhost")
     NODE_PORT = int(os.getenv("NODE_PORT", 8001))
-    HEADLESS = True
-    VIEWPORT = {"width": 1280, "height": 720}
-    FPS = 15
-    IS_WINDOWS = platform.system() == "Windows"
+    HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
+    MAX_BROWSERS = int(os.getenv("MAX_BROWSERS", 20))
+    HEARTBEAT_INTERVAL = 5
+    
+    WIDTH = 1280
+    HEIGHT = 720
+    FPS = 30
+    JPEG_QUALITY = 50
 
-# ======================================================================
-# STEALTH SCRIPT
-# ======================================================================
+img_executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 4)
 
 STEALTH_JS = r"""
-(function() {
-    // 1. Hide webdriver
+(() => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    
-    // 2. Languages
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-    
-    // 3. Fake Plugins
-    const mockPlugins = [
-        { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-        { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }
-    ];
-    Object.defineProperty(navigator, 'plugins', { get: () => mockPlugins });
-
-    // 4. Chrome object
-    window.chrome = { runtime: {}, app: {}, csi: () => {}, loadTimes: () => {} };
-
-    // 5. WebGL
     const getParameter = WebGLRenderingContext.prototype.getParameter;
     WebGLRenderingContext.prototype.getParameter = function(p) {
         if (p === 37445) return 'Google Inc. (Intel)';
         if (p === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)';
         return getParameter.apply(this, arguments);
     };
-
-    // 6. Canvas Noise (Anti-Fingerprinting)
-    const originalGetContext = HTMLCanvasElement.prototype.getContext;
-    HTMLCanvasElement.prototype.getContext = function(t, a) {
-        const c = originalGetContext.call(this, t, a);
-        if (t === '2d' && c) {
-            const org = c.getImageData;
-            c.getImageData = function(x, y, w, h) {
-                const d = org.call(this, x, y, w, h);
-                // Subtle noise to the first pixel
-                d.data[0] = d.data[0] + (Math.random() > 0.5 ? 1 : -1);
-                return d;
-            };
-        }
-        return c;
-    };
-
-    // 7. Proxy protection
-    const makeProxy = (fn) => new Proxy(fn, { 
-        get: (t, p) => p === 'toString' ? () => 'function () { [native code] }' : t[p] 
-    });
-    window.navigator.permissions.query = makeProxy(window.navigator.permissions.query);
+    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+    const mockPlugins = [
+        { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+        { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }
+    ];
+    Object.defineProperty(navigator, 'plugins', { get: () => mockPlugins });
+    
+    // Smooth scrolling fix
+    window.addEventListener('wheel', (e) => {
+        if (e.ctrlKey) e.preventDefault();
+    }, { passive: false });
 })();
 """
-
-# ======================================================================
-# BROWSER INSTANCE
-# ======================================================================
 
 class BrowserVideoTrack(MediaStreamTrack):
     kind = "video"
     def __init__(self):
         super().__init__()
-        self.queue = asyncio.Queue(maxsize=2)
+        self._queue = asyncio.Queue(maxsize=1)
 
     async def recv(self):
-        frame = await self.queue.get()
+        frame = await self._queue.get()
         return frame
 
+    def push_frame(self, frame):
+        if self._queue.full():
+            try: self._queue.get_nowait()
+            except: pass
+        try: self._queue.put_nowait(frame)
+        except: pass
+
 class BrowserInstance:
-    def __init__(self, browser_id: str):
-        self.id = browser_id
+    def __init__(self, bid: str):
+        self.id = bid
         self.playwright = None
         self.browser = None
         self.context = None
         self.page = None
-        self.active_websockets: List[WebSocket] = []
-        self.peer_connections = set()
-        self.active_tracks = set() # Set[BrowserVideoTrack]
-        self.is_running = False
-        self.cdp = None
-        self._timestamp = 0
+        self.is_active = False
+        self.websockets: List[WebSocket] = []
+        self.pcs: List[RTCPeerConnection] = []
+        self.tracks: List[BrowserVideoTrack] = []
+        self._last_pts = 0
+        self._frames_sent = 0
+        self._last_frame_log = time.time()
 
-    async def start(self):
-        if ud_async_playwright:
-            self.playwright = await ud_async_playwright().start()
-        else:
-            self.playwright = await async_playwright().start()
-
+    async def launch(self):
+        logger.info(f"Launching browser {self.id}...")
+        self.playwright = await async_playwright().start()
+        
         args = [
             "--disable-blink-features=AutomationControlled",
             "--no-sandbox",
             "--disable-dev-shm-usage",
-            "--use-gl=desktop",
-            "--enable-webgl",
-            "--ignore-gpu-blocklist",
-            "--disable-infobars",
             "--window-position=0,0",
-            "--disable-canvas-aa", # Performance
-            "--disable-2d-canvas-clip-utils", # Performance
-            "--disable-gl-drawing-for-tests",
+            "--disable-infobars",
+            "--mute-audio",
+            "--disable-canvas-aa",
+            "--disable-2d-canvas-clip-utils",
+            "--use-gl=desktop" if platform.system() != "Windows" else "--disable-gpu",
         ]
-        
-        if Config.IS_WINDOWS and Config.HEADLESS:
-            args.append("--disable-gpu")
 
         self.browser = await self.playwright.chromium.launch(
             headless=Config.HEADLESS,
             args=args,
             channel="chrome"
         )
-
-        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        
         self.context = await self.browser.new_context(
-            viewport=Config.VIEWPORT, 
-            user_agent=ua,
-            device_scale_factor=1,
+            viewport={"width": Config.WIDTH, "height": Config.HEIGHT},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
         
         await self.context.add_init_script(STEALTH_JS)
         self.page = await self.context.new_page()
-        await self.page.add_init_script("document.documentElement.style.background = '#000';")
         
-        await self.page.goto("https://www.google.com", wait_until="networkidle")
-        self.is_running = True
+        self.cdp = await self.context.new_cdp_session(self.page)
+        logger.info(f"CDP Session started for {self.id}")
         
-        # Start High-Performance CDP Screencast
-        self.cdp = await self.page.context.new_cdp_session(self.page)
+        self.cdp.on("Page.screencastFrame", self._on_frame)
+        
         await self.cdp.send("Page.startScreencast", {
             "format": "jpeg",
-            "quality": 40, # Lower quality for much higher speed
-            "maxWidth": 1280,
-            "maxHeight": 720,
+            "quality": Config.JPEG_QUALITY,
+            "maxWidth": Config.WIDTH,
+            "maxHeight": Config.HEIGHT,
             "everyNthFrame": 1
         })
-        self.cdp.on("Page.screencastFrame", self._on_screencast_frame)
+        logger.info(f"Screencast started for {self.id}")
+        
+        await self.page.goto("https://www.google.com")
+        self.is_active = True
+        
+        # Start the High-Speed Frame Engine (Hybrid)
+        asyncio.create_task(self._frame_engine())
+        logger.info(f"Browser {self.id} ready.")
 
-    async def _on_screencast_frame(self, data):
-        """Callback for CDP screencast frames"""
+    async def _frame_engine(self):
+        """High-speed hybrid frame engine: CDP + Screenshot Fallback"""
+        last_frame_count = 0
+        while self.is_active:
+            await asyncio.sleep(0.1) # 10fps minimum guarantee
+            if self._frames_sent == last_frame_count:
+                # CDP is stalled or not sending, force a screenshot
+                try:
+                    screenshot = await self.page.screenshot(type="jpeg", quality=Config.JPEG_QUALITY, scale="css")
+                    b64_data = base64.b64encode(screenshot).decode('utf-8')
+                    await self._distribute_frame(b64_data)
+                except: pass
+            last_frame_count = self._frames_sent
+
+    async def _distribute_frame(self, b64_data: str):
+        self._frames_sent += 1
+        now = time.time()
+        if now - self._last_frame_log > 5:
+            logger.info(f"NODE FLOW [{self.id}]: {self._frames_sent} frames delivered in last 5s")
+            self._frames_sent = 0
+            self._last_frame_log = now
+
+        if self.websockets:
+            msg = json.dumps({"type": "frame", "data": b64_data})
+            for ws in list(self.websockets):
+                try: await ws.send_text(msg)
+                except: self.websockets.remove(ws)
+        
+        if self.tracks:
+            img_executor.submit(self._process_and_push_webrtc, b64_data)
+
+    async def _on_frame(self, data):
+        if not self.is_active: return
         try:
             await self.cdp.send("Page.screencastFrameAck", {"sessionId": data["sessionId"]})
-            b64_data = data["data"]
-            image_bytes = base64.b64decode(b64_data)
-            
-            # 1. Prepare frame for WebRTC
-            if self.active_tracks:
-                try:
-                    img = Image.open(io.BytesIO(image_bytes))
-                    new_frame = VideoFrame.from_image(img)
-                    new_frame.pts = self._timestamp
-                    new_frame.time_base = fractions.Fraction(1, 90000)
-                    self._timestamp += 3000
+            await self._distribute_frame(data["data"])
+        except: pass
 
-                    # Push to all active WebRTC tracks
-                    for track in list(self.active_tracks):
-                        if track.queue.full():
-                            try: track.queue.get_nowait()
-                            except: pass
-                        track.queue.put_nowait(new_frame)
-                except Exception as e:
-                    print(f"Frame encoding error: {e}")
+    def _process_and_push_webrtc(self, b64_str: str):
+        try:
+            raw_bytes = base64.b64decode(b64_str)
+            nparr = np.frombuffer(raw_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if img is None: return
+            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            frame = VideoFrame.from_ndarray(img_rgb, format='rgb24')
+            frame.pts = self._last_pts
+            frame.time_base = fractions.Fraction(1, 90000)
+            self._last_pts += 3000
+            for track in list(self.tracks):
+                track.push_frame(frame)
+        except: pass
+
+    async def handle_input(self, action: dict):
+        if not self.is_active: return
+        try:
+            atype = action.get("type")
+            x, y = action.get("x", 0), action.get("y", 0)
+            logger.info(f"INPUT RECEIVED [{self.id}]: {atype} at ({x}, {y})")
             
-            # 2. Update WebSockets
-            if self.active_websockets:
-                msg = json.dumps({"type": "frame", "data": b64_data})
-                for ws in list(self.active_websockets):
-                    try: await ws.send_text(msg)
-                    except: 
-                        if ws in self.active_websockets: self.active_websockets.remove(ws)
+            if x is not None: x = max(0, min(int(x), Config.WIDTH))
+            if y is not None: y = max(0, min(int(y), Config.HEIGHT))
+            
+            if atype == "mousemove":
+                await self.page.mouse.move(x, y)
+            elif atype == "mousedown":
+                await self.page.mouse.down()
+            elif atype == "mouseup":
+                await self.page.mouse.up()
+            elif atype == "click":
+                await self.page.mouse.click(x, y)
+            elif atype == "key":
+                key = action.get("key")
+                if key:
+                    logger.info(f"Keypress {self.id}: {key}")
+                    await self.page.keyboard.press(key)
+            elif atype == "scroll":
+                await self.page.mouse.wheel(0, int(action.get("deltaY", 0)))
+            elif atype == "navigate":
+                url = action["url"]
+                if not url.startswith("http"): url = "https://" + url
+                logger.info(f"Navigating {self.id} to {url}")
+                await self.page.goto(url)
+            elif atype == "refresh": await self.page.reload()
+            elif atype == "back": await self.page.go_back()
+            elif atype == "forward": await self.page.go_forward()
         except Exception as e:
-            print(f"Screencast processing error: {e}")
+            logger.error(f"Input Error {self.id}: {e}")
 
-    async def stop(self):
-        self.is_running = False
+    async def cleanup(self):
+        self.is_active = False
+        logger.info(f"Cleaning up browser {self.id}")
         try:
             if hasattr(self, 'cdp'): await self.cdp.detach()
+            if self.page: await self.page.close()
+            if self.context: await self.context.close()
+            if self.browser: await self.browser.close()
+            if self.playwright: await self.playwright.stop()
         except: pass
-        if self.page: await self.page.close()
-        if self.context: await self.context.close()
-        if self.browser: await self.browser.close()
-        if self.playwright: await self.playwright.stop()
-
-# ======================================================================
-# NODE APP
-# ======================================================================
 
 app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 browsers: Dict[str, BrowserInstance] = {}
 
-async def register_with_server():
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(heartbeat_loop())
+
+async def heartbeat_loop():
     node_url = f"http://{Config.NODE_HOST}:{Config.NODE_PORT}"
     while True:
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=2.0) as client:
                 await client.post(
                     f"{Config.SERVER_URL}/register",
                     json={
@@ -251,115 +271,96 @@ async def register_with_server():
                     }
                 )
         except: pass
-        await asyncio.sleep(5)
-
-@app.on_event("startup")
-async def startup():
-    print(f"Node {Config.NODE_ID} UP on port {Config.NODE_PORT}")
-    asyncio.create_task(register_with_server())
+        await asyncio.sleep(Config.HEARTBEAT_INTERVAL)
 
 @app.post("/create")
 async def create_browser():
-    browser_id = str(uuid.uuid4())[:8]
-    instance = BrowserInstance(browser_id)
-    await instance.start()
-    browsers[browser_id] = instance
-    return {"id": browser_id}
+    if len(browsers) >= Config.MAX_BROWSERS:
+        return {"status": "error", "message": "Max browsers reached"}
+    bid = str(uuid.uuid4())[:8]
+    instance = BrowserInstance(bid)
+    await instance.launch()
+    browsers[bid] = instance
+    return {"id": bid}
 
-@app.post("/close/{browser_id}")
-async def close_browser(browser_id: str):
-    if browser_id in browsers:
-        await browsers[browser_id].stop()
-        del browsers[browser_id]
-        return {"status": "closed"}
-    return {"status": "not_found"}
-
-@app.post("/close_all")
-async def close_all_browsers():
-    ids = list(browsers.keys())
-    for bid in ids:
-        await browsers[bid].stop()
+@app.post("/close/{bid}")
+async def close_browser(bid: str):
+    if bid in browsers:
+        await browsers[bid].cleanup()
         del browsers[bid]
-    return {"status": "all_closed"}
+    return {"status": "ok"}
 
-@app.post("/api/offer/{browser_id}")
-async def webrtc_offer(browser_id: str, request: Request):
-    print(f"Received WebRTC offer for {browser_id}")
-    if browser_id not in browsers:
-        return {"error": "not_found"}
-    
+@app.post("/api/offer/{bid}")
+async def webrtc_offer(bid: str, request: Request):
+    if bid not in browsers: return {"error": "not_found"}
+    logger.info(f"WebRTC Offer for {bid}")
     params = await request.json()
     offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
     
-    pc = RTCPeerConnection()
-    instance = browsers[browser_id]
-    instance.peer_connections.add(pc)
-    
-    # Create per-session track
-    track = BrowserVideoTrack()
-    instance.active_tracks.add(track)
-    pc.addTrack(track)
-    
-    @pc.on("connectionstatechange")
-    async def on_connectionstatechange():
-        if pc.connectionState == "failed" or pc.connectionState == "closed":
-            instance.peer_connections.discard(pc)
-            instance.active_tracks.discard(track)
-    
-    await pc.setRemoteDescription(offer)
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
-    
-    return {
-        "sdp": pc.localDescription.sdp,
-        "type": pc.localDescription.type
-    }
+    try:
+        pc = RTCPeerConnection(configuration=RTCConfiguration(
+            iceServers=[RTCIceServer(urls=["stun:stun.l.google.com:19302"])]
+        ))
+        browsers[bid].pcs.append(pc)
+        
+        track = BrowserVideoTrack()
+        browsers[bid].tracks.append(track)
+        
+        # Manually create transceiver with explicit direction to avoid aiortc bugs
+        pc.addTransceiver("video", direction="sendonly")
+        sender = pc.getSenders()[0]
+        await sender.replaceTrack(track)
+        
+        @pc.on("datachannel")
+        def on_datachannel(channel):
+            logger.info(f"DataChannel created for {bid}")
+            @channel.on("message")
+            def on_message(message):
+                try:
+                    action = json.loads(message)
+                    asyncio.create_task(browsers[bid].handle_input(action))
+                except Exception as e:
+                    logger.error(f"DC Parse Error: {e}")
 
-@app.websocket("/ws/{browser_id}")
-async def websocket_endpoint(websocket: WebSocket, browser_id: str):
-    if browser_id not in browsers:
+        @pc.on("connectionstatechange")
+        async def on_state():
+            logger.info(f"PC State {bid}: {pc.connectionState}")
+            if pc.connectionState in ["failed", "closed"]:
+                if pc in browsers[bid].pcs: browsers[bid].pcs.remove(pc)
+                if track in browsers[bid].tracks: browsers[bid].tracks.remove(track)
+
+        await pc.setRemoteDescription(offer)
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        
+        return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+    except Exception as e:
+        logger.error(f"WebRTC Handshake Failed: {e}")
+        # Cleanup
+        if pc in browsers[bid].pcs: browsers[bid].pcs.remove(pc)
+        return {"error": str(e)}
+
+@app.websocket("/ws/{bid}")
+async def browser_ws(websocket: WebSocket, bid: str):
+    if bid not in browsers:
         await websocket.close()
         return
     await websocket.accept()
-    instance = browsers[browser_id]
-    instance.active_websockets.append(websocket)
+    instance = browsers[bid]
+    instance.websockets.append(websocket)
+    logger.info(f"WS Connected {bid}")
     try:
         while True:
             data = await websocket.receive_text()
             action = json.loads(data)
-            type = action.get("type")
-            
-            if type == "navigate":
-                url = action.get("url", "")
-                if not url.startswith(("http://", "https://")):
-                    url = "https://" + url
-                await instance.page.goto(url)
-            
-            elif type == "mousemove":
-                await instance.page.mouse.move(action["x"], action["y"])
-            
-            elif type == "mousedown":
-                await instance.page.mouse.down()
-            
-            elif type == "mouseup":
-                await instance.page.mouse.up()
-            
-            elif type == "click":
-                await instance.page.mouse.click(action["x"], action["y"])
-            
-            elif type == "type":
-                await instance.page.keyboard.type(action["text"])
-            
-            elif type == "key":
-                await instance.page.keyboard.press(action["key"])
-            
-            elif type == "scroll":
-                await instance.page.mouse.wheel(0, action["deltaY"])
-                
+            asyncio.create_task(instance.handle_input(action))
     except WebSocketDisconnect:
-        if websocket in instance.active_websockets: instance.active_websockets.remove(websocket)
+        logger.warning(f"WS Disconnected {bid}")
     except Exception as e:
-        print(f"WS error: {e}")
+        logger.error(f"WS Error {bid}: {e}")
+    finally:
+        if websocket in instance.websockets:
+            instance.websockets.remove(websocket)
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=Config.NODE_PORT)
+    uvicorn.run(app, host="0.0.0.0", port=Config.NODE_PORT, log_level="info")
