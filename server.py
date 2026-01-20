@@ -90,27 +90,30 @@ async def hub_endpoint(websocket: WebSocket):
         if websocket in hub_clients: hub_clients.remove(websocket)
 
 @app.get("/api/request_browser")
-async def request_browser(username: str = Depends(get_current_username)):
-    """Allocates a browser on the least loaded node"""
-    now = time.time()
-    active_node_ids = [nid for nid, data in nodes.items() if now - data["last_seen"] < NODE_TIMEOUT]
+async def request_browser(count: int = 1, username: str = Depends(get_current_username)):
+    """Allocates multiple browsers across the cluster"""
+    if count < 1 or count > 10: count = 1
     
-    if not active_node_ids:
-        raise HTTPException(status_code=500, detail="No active nodes available")
-    
-    # Sort by number of browsers
-    best_node_id = min(active_node_ids, key=lambda nid: nodes[nid]["browsers_count"])
-    node_url = nodes[best_node_id]["url"]
-    
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(f"{node_url}/create")
-            if resp.status_code == 200:
-                return resp.json()
-            else:
-                raise HTTPException(status_code=500, detail=f"Node error: {resp.text}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to communicate with node: {str(e)}")
+    results = []
+    for _ in range(count):
+        now = time.time()
+        active_node_ids = [nid for nid, data in nodes.items() if now - data["last_seen"] < NODE_TIMEOUT]
+        
+        if not active_node_ids:
+            break
+        
+        # Smart load balancing
+        best_node_id = min(active_node_ids, key=lambda nid: nodes[nid]["browsers_count"])
+        node_url = nodes[best_node_id]["url"]
+        
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(f"{node_url}/create")
+                if resp.status_code == 200:
+                    results.append(resp.json())
+        except: continue
+        
+    return {"results": results, "count": len(results)}
 
 # ======================================================================
 # THE MASTERPIECE DASHBOARD
@@ -142,25 +145,36 @@ async def dashboard():
         }
     </script>
     <style>
-        :root { --accent: #6366f1; }
-        body { background: #020617; color: #f1f5f9; overflow-x: hidden; }
-        .glass { background: rgba(15, 23, 42, 0.7); backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.05); }
-        .neon-border { position: relative; }
-        .neon-border::after { 
-            content: ''; position: absolute; inset: -1px; background: linear-gradient(45deg, var(--accent), #ec4899); 
-            z-index: -1; border-radius: inherit; opacity: 0.3; transition: 0.3s;
-        }
-        .neon-border:hover::after { opacity: 1; filter: blur(2px); }
+        :root { --accent: #6366f1; --accent-glow: rgba(99, 102, 241, 0.4); }
+        body { background: #020617; color: #f1f5f9; overflow-x: hidden; font-family: 'Space Grotesk', sans-serif; }
+        
+        /* Premium Glassmorphism */
+        .glass { background: rgba(15, 23, 42, 0.7); backdrop-filter: blur(25px); border: 1px solid rgba(255,255,255,0.08); }
+        .glass-dark { background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(15px); border: 1px solid rgba(255,255,255,0.1); }
+        
+        /* Balanced Grid */
+        #grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(500px, 1fr)); gap: 2rem; padding-bottom: 5rem; }
         
         .browser-card { 
-            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-            border: 1px solid rgba(255,255,255,0.03);
+            background: #0f172a; border: 1px solid rgba(255,255,255,0.05); border-radius: 1.5rem;
+            transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+            position: relative; overflow: hidden;
+            box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5);
         }
-        .browser-card:hover { transform: translateY(-4px); border-color: var(--accent); }
-        .browser-card.selected { background: rgba(99, 102, 241, 0.1); border-color: var(--accent); box-shadow: 0 0 30px rgba(99, 102, 241, 0.2); }
-
+        .browser-card:hover { border-color: var(--accent); transform: translateY(-4px); box-shadow: 0 20px 50px -15px rgba(0,0,0,0.8); }
+        .browser-card.selected { border: 2px solid var(--accent); box-shadow: 0 0 40px var(--accent-glow); }
+        
+        /* Interaction Surface */
+        .surface-wrapper { position: relative; aspect-ratio: 16/9; background: #000; overflow: hidden; }
+        canvas, video { width: 100%; height: 100%; object-fit: contain; cursor: crosshair; outline: none; }
+        
         .debug-tag { font-family: 'JetBrains Mono', monospace; font-size: 8px; color: #64748b; }
-        #debug-hud { position: fixed; bottom: 20px; right: 20px; z-index: 9999; background: rgba(0,0,0,0.8); padding: 10px; border-radius: 8px; font-size: 10px; pointer-events: none; max-height: 200px; overflow: hidden; border: 1px solid rgba(255,255,255,0.1); }
+        #debug-hud { position: fixed; bottom: 20px; right: 20px; z-index: 9999; background: rgba(0,0,0,0.8); padding: 12px; border-radius: 12px; font-size: 10px; pointer-events: none; max-height: 200px; overflow: hidden; border: 1px solid var(--accent); }
+        
+        .btn-brand { background: var(--accent); color: white; transition: 0.2s; }
+        .btn-brand:hover { filter: brightness(1.2); transform: scale(1.05); }
+        .btn-nav { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.05); border-radius: 8px; transition: 0.2s; color: #94a3b8; }
+        .btn-nav:hover { background: var(--accent); color: white; transform: rotate(5deg); }
     </style>
 </head>
 <body class="font-sans">
@@ -182,13 +196,17 @@ async def dashboard():
 
         <div class="flex items-center gap-6">
             <div class="hidden md:flex gap-8 text-xs font-mono">
-                <div class="flex flex-col"><span class="text-slate-500">NODES</span><span id="stat-nodes" class="text-white">0</span></div>
-                <div class="flex flex-col"><span class="text-slate-500">TOTAL BROWSERS</span><span id="stat-browsers" class="text-white">0</span></div>
-                <div class="flex flex-col"><span class="text-slate-500">ACTIVE TASKS</span><span id="stat-selected" class="text-brand font-bold">0</span></div>
+                <div class="flex flex-col"><span class="text-slate-500 uppercase">Load Balance</span><span id="stat-nodes" class="text-white">0 Nodes Connected</span></div>
+                <div class="flex flex-col"><span class="text-slate-500 uppercase">Pool Size</span><span id="stat-browsers" class="text-white">0 Active Sessions</span></div>
+                <div class="flex flex-col"><span class="text-slate-500 uppercase">Sync Level</span><span id="stat-selected" class="text-brand font-bold">0 Synced</span></div>
             </div>
-            <button onclick="requestNewBrowser()" id="req-btn" class="bg-brand hover:brightness-110 text-white px-6 py-3 rounded-2xl text-sm font-extrabold transition-all shadow-xl shadow-brand/20 active:scale-95">
-                LAUNCH NEW BROWSER
-            </button>
+            
+            <div class="flex items-center bg-black/40 rounded-2xl p-1 border border-white/5">
+                <input id="batch-count" type="number" value="1" min="1" max="10" class="w-12 bg-transparent text-center text-sm font-bold outline-none">
+                <button onclick="requestNewBrowser()" id="req-btn" class="bg-brand hover:brightness-110 text-white px-6 py-2.5 rounded-xl text-xs font-extrabold transition-all shadow-xl shadow-brand/20 active:scale-95">
+                    SPAWN BATCH
+                </button>
+            </div>
         </div>
     </nav>
 
@@ -228,7 +246,7 @@ async def dashboard():
 
     <!-- Main View -->
     <main class="p-8">
-        <div id="grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-6">
+        <div id="grid">
             <!-- Cards injected here -->
         </div>
     </main>
@@ -407,55 +425,56 @@ async def dashboard():
                 if (!card) {
                     card = document.createElement('div');
                     card.id = `card-${safeId}`;
-                    card.className = "browser-card glass rounded-[2rem] p-4 flex flex-col gap-3 group overflow-hidden";
+                    card.className = "browser-card group";
                     card.innerHTML = `
-                        <div class="flex items-center justify-between">
+                        <!-- Compact Header -->
+                        <div class="px-4 py-3 flex items-center justify-between bg-black/20 border-b border-white/5">
                             <div class="flex items-center gap-3">
-                                <input type="checkbox" onchange="toggleSelect('${inst.key}')" class="w-5 h-5 rounded-lg border-white/10 bg-black/40 checked:bg-brand transition cursor-pointer">
+                                <input type="checkbox" onchange="toggleSelect('${inst.key}')" class="w-4 h-4 rounded border-white/10 bg-black/40 checked:bg-brand transition cursor-pointer">
                                 <div>
-                                    <div class="text-[9px] font-black text-slate-500 uppercase tracking-widest">${inst.nid}</div>
-                                    <div class="text-xs font-bold text-white">${inst.bid}</div>
+                                    <div class="text-xs font-bold text-white flex items-center gap-2">
+                                        ${inst.bid.substring(0,8)} 
+                                        <span id="mode-tag-${safeId}" class="text-[8px] opacity-70">...</span>
+                                    </div>
                                 </div>
                             </div>
-                            <button onclick="openModal('${inst.key}')" class="w-8 h-8 rounded-xl bg-white/5 hover:bg-brand/20 hover:text-brand transition flex items-center justify-center">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
-                            </button>
-                        </div>
-                        <div class="aspect-video bg-black/60 rounded-2xl relative overflow-hidden cursor-crosshair">
-                            <canvas id="view-ws-${safeId}" class="w-full h-full object-cover"></canvas>
-                            <video id="view-rtc-${safeId}" class="hidden w-full h-full object-cover" autoplay playsinline muted></video>
-                            <div class="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition">
-                                <button onclick="openModal('${inst.key}')" class="p-1.5 bg-black/60 rounded-lg text-white hover:bg-brand transition">⛶</button>
+                            <div class="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                                <button onclick="navAction('${inst.key}', 'back')" class="btn-nav">←</button>
+                                <button onclick="navAction('${inst.key}', 'forward')" class="btn-nav">→</button>
+                                <button onclick="navAction('${inst.key}', 'refresh')" class="btn-nav">↻</button>
+                                <button onclick="closeBrowser('${inst.key}')" class="btn-nav hover:bg-red-500/20 hover:text-red-500">×</button>
+                                <button onclick="openModal('${inst.key}')" class="btn-nav bg-brand/20 text-brand">⛶</button>
                             </div>
                         </div>
-                        <div class="flex gap-2">
-                            <input id="url-${safeId}" type="text" placeholder="Quick URL..." class="flex-1 bg-black/40 border border-white/5 rounded-xl px-3 py-2 text-[10px] focus:border-brand/40 outline-none">
-                            <button onclick="navSingle('${inst.key}')" class="bg-white/5 hover:bg-white/10 p-2 rounded-xl transition">
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M13 7l5 5m0 0l-5 5m5-5H6" /></svg>
-                            </button>
+                        
+                        <!-- Large Visual Surface -->
+                        <div class="surface-wrapper">
+                            <canvas id="view-ws-${safeId}"></canvas>
+                            <video id="view-rtc-${safeId}" autoplay playsinline muted class="hidden"></video>
+                            
+                            <!-- Quick Nav Input (Hover Only) -->
+                            <div class="absolute bottom-4 left-4 right-4 translate-y-2 opacity-0 group-hover:translate-y-0 group-hover:opacity-100 transition-all z-10">
+                                <div class="bg-black/60 backdrop-blur-md rounded-xl p-1 flex items-center border border-white/10">
+                                    <input id="url-${safeId}" type="text" placeholder="https://..." class="bg-transparent border-none outline-none flex-1 px-3 py-1.5 text-[11px] text-white">
+                                    <button onclick="navSingle('${inst.key}')" class="bg-brand text-white px-3 py-1.5 rounded-lg text-[10px] font-bold">GO</button>
+                                </div>
+                            </div>
                         </div>
                     `;
                     grid.appendChild(card);
                     inst.canvas = document.getElementById(`view-ws-${safeId}`);
                     inst.video = document.getElementById(`view-rtc-${safeId}`);
                     
-                    // Bind interaction to grid cards too!
                     bindSurfaceEvents(inst.canvas, inst.key);
                     bindSurfaceEvents(inst.video, inst.key);
                 }
                 
-                card.classList.toggle('selected', selectedKeys.has(inst.key));
-                card.querySelector('input').checked = selectedKeys.has(inst.key);
+                const cardEl = document.getElementById(`card-${safeId}`);
+                const cb = cardEl.querySelector('input[type="checkbox"]');
+                if (cb) cb.checked = selectedKeys.has(inst.key);
+                cardEl.classList.toggle('selected', selectedKeys.has(inst.key));
                 
-                const v_ws = document.getElementById(`view-ws-${safeId}`);
-                const v_rtc = document.getElementById(`view-rtc-${safeId}`);
-                if (inst.mode === 'webrtc') {
-                    v_ws.classList.add('hidden');
-                    v_rtc.classList.remove('hidden');
-                } else {
-                    v_rtc.classList.add('hidden');
-                    v_ws.classList.remove('hidden');
-                }
+                updateGridItem(inst);
             });
         }
 
@@ -463,9 +482,16 @@ async def dashboard():
             const safeId = inst.key.replace(/[:]/g, '-');
             const v_ws = document.getElementById(`view-ws-${safeId}`);
             const v_rtc = document.getElementById(`view-rtc-${safeId}`);
+            const tag = document.getElementById(`mode-tag-${safeId}`);
+            
             if (inst.mode === 'webrtc') {
                 v_ws?.classList.add('hidden');
                 v_rtc?.classList.remove('hidden');
+                if (tag) { tag.textContent = 'WebRTC ⚡'; tag.style.background = 'rgba(34, 197, 94, 0.1)'; tag.style.color = '#22c55e'; }
+            } else {
+                v_rtc?.classList.add('hidden');
+                v_ws?.classList.remove('hidden');
+                if (tag) { tag.textContent = 'WebSocket 📡'; tag.style.background = 'rgba(99, 102, 241, 0.1)'; tag.style.color = '#6366f1'; }
             }
         }
 
@@ -580,14 +606,23 @@ async def dashboard():
         }
 
         let lastMove = 0;
+        function navAction(key, type) {
+            sendMsg(key, { type });
+        }
+
+        async function closeBrowser(key) {
+            const inst = instances.find(i => i.key === key);
+            if (!inst) return;
+            if (confirm(`Kill session ${inst.bid}?`)) {
+                await fetch(`${inst.url}/close/${inst.bid}`, { method: 'POST' });
+                selectedKeys.delete(key);
+            }
+        }
+
+        let focusedKey = null;
+
         function bindSurfaceEvents(el, key) {
             const handler = (type, e) => {
-                if (type === 'mousemove') {
-                    const now = performance.now();
-                    if (now - lastMove < 20) return; // 50fps
-                    lastMove = now;
-                }
-                
                 const rect = el.getBoundingClientRect();
                 const scaleX = 1280 / rect.width;
                 const scaleY = 720 / rect.height;
@@ -602,26 +637,45 @@ async def dashboard():
                     key: e.key 
                 };
 
-                const targets = followMode ? Array.from(selectedKeys) : [key];
-                targets.forEach(k => sendMsg(k, payload));
+                // Send to card being clicked
+                sendMsg(key, payload);
+                
+                if (followMode && selectedKeys.has(key)) {
+                    selectedKeys.forEach(k => { if (k !== key) sendMsg(k, payload); });
+                }
             };
 
-            el.onmousedown = (e) => { el.focus(); handler('mousedown', e); };
+            el.onmousedown = (e) => { 
+                focusedKey = key; 
+                el.focus(); 
+                handler('mousedown', e); 
+            };
             el.onmouseup = (e) => handler('mouseup', e);
             el.onmousemove = (e) => handler('mousemove', e);
             el.onclick = (e) => handler('click', e);
             el.onwheel = (e) => { e.preventDefault(); handler('scroll', e); };
-            el.tabIndex = 0; // Ensure it can be focused
-            
-            window.onkeydown = (e) => {
-                if (document.activeElement.tagName === 'INPUT') return;
-                if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Backspace', 'Tab', 'Enter'].includes(e.key)) {
-                    e.preventDefault();
-                }
-                const targets = followMode ? Array.from(selectedKeys) : [key];
-                targets.forEach(k => sendMsg(k, { type: 'key', key: e.key }));
-            };
+            el.tabIndex = 0; 
         }
+
+        // Global Key Listener
+        window.addEventListener('keydown', (e) => {
+            if (document.activeElement.tagName === 'INPUT') return;
+            if (!focusedKey && !activeModalKey) return;
+
+            const key = activeModalKey || focusedKey;
+            
+            // Critical: Don't let space/arrows scroll the page while controlling
+            const blocked = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Backspace', 'Tab', 'Enter', ' '];
+            if (blocked.includes(e.key)) e.preventDefault();
+
+            const payload = { type: 'key', key: e.key };
+            sendMsg(key, payload);
+
+            // Broadcast if needed
+            if (followMode && selectedKeys.has(key)) {
+                selectedKeys.forEach(k => { if (k !== key) sendMsg(k, payload); });
+            }
+        });
 
         function modalNav(type) {
             if (!activeModalKey) return;
@@ -639,15 +693,16 @@ async def dashboard():
 
         async function requestNewBrowser() {
             const btn = document.getElementById('req-btn');
+            const count = document.getElementById('batch-count').value;
             btn.disabled = true;
-            btn.textContent = "ALLOCATING...";
+            btn.textContent = `SPAWNING ${count}...`;
             try {
-                await fetch('/api/request_browser');
+                await fetch(`/api/request_browser?count=${count}`);
             } catch (e) {
                 alert("Failed to allocate: " + e.message);
             }
             btn.disabled = false;
-            btn.textContent = "LAUNCH NEW BROWSER";
+            btn.textContent = "SPAWN BATCH";
         }
 
         initHub();
