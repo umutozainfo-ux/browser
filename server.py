@@ -165,8 +165,8 @@ async def dashboard():
         .browser-card.selected { border: 2px solid var(--accent); box-shadow: 0 0 40px var(--accent-glow); }
         
         /* Interaction Surface */
-        .surface-wrapper { position: relative; aspect-ratio: 16/9; background: #000; overflow: hidden; }
-        canvas, video { width: 100%; height: 100%; object-fit: contain; cursor: crosshair; outline: none; }
+        .surface-wrapper { position: relative; aspect-ratio: 16/9; background: #000; overflow: hidden; user-select: none; -webkit-user-select: none; }
+        canvas, video { width: 100%; height: 100%; object-fit: contain; cursor: crosshair; outline: none; touch-action: none; }
         
         .debug-tag { font-family: 'JetBrains Mono', monospace; font-size: 8px; color: #64748b; }
         #debug-hud { position: fixed; bottom: 20px; right: 20px; z-index: 9999; background: rgba(0,0,0,0.8); padding: 12px; border-radius: 12px; font-size: 10px; pointer-events: none; max-height: 200px; overflow: hidden; border: 1px solid var(--accent); }
@@ -626,6 +626,7 @@ async def dashboard():
         function bindSurfaceEvents(el, key) {
             const getCoords = (e) => {
                 const rect = el.getBoundingClientRect();
+                // Ensure we use the actual rendered size for scaling
                 const scaleX = 1280 / rect.width;
                 const scaleY = 720 / rect.height;
                 return {
@@ -640,7 +641,7 @@ async def dashboard():
                     type, 
                     x: coords.x, 
                     y: coords.y, 
-                    deltaY: e.deltaY ? Math.round(e.deltaY * 1.5) : 0,
+                    deltaY: e.deltaY || 0,
                     key: e.key,
                     button: e.button === 2 ? "right" : "left"
                 };
@@ -651,24 +652,45 @@ async def dashboard():
                 }
             };
 
+            let startX, startY;
+
             el.onmousedown = (e) => { 
+                e.preventDefault();
+                e.stopPropagation();
                 focusedKey = key; 
-                isDragging = true;
+                isDragging = false; 
+                const coords = getCoords(e);
+                startX = coords.x;
+                startY = coords.y;
+
                 el.focus(); 
                 handler('mousedown', e);
                 
                 // Track globally to handle dragging outside the element
                 const onGlobalMove = (me) => {
-                    if (!isDragging) return;
+                    if (Math.abs(me.movementX) > 0.1 || Math.abs(me.movementY) > 0.1) {
+                        isDragging = true;
+                    }
                     const now = performance.now();
-                    if (now - lastMove < 25) return; // ~40fps throttle
+                    if (now - lastMove < 16) return; // ~60fps throttle
                     lastMove = now;
                     handler('mousemove', me);
                 };
                 
                 const onGlobalUp = (ue) => {
+                    ue.preventDefault();
+                    ue.stopPropagation();
+                    const coords = getCoords(ue);
+                    const dist = Math.sqrt(Math.pow(coords.x - startX, 2) + Math.pow(coords.y - startY, 2));
+                    
+                    if (!isDragging && dist < 5) {
+                        // It was a crisp click, not a drag
+                        handler('click', ue);
+                    } else {
+                        handler('mouseup', ue);
+                    }
+                    
                     isDragging = false;
-                    handler('mouseup', ue);
                     window.removeEventListener('mousemove', onGlobalMove);
                     window.removeEventListener('mouseup', onGlobalUp);
                 };
@@ -677,8 +699,7 @@ async def dashboard():
                 window.addEventListener('mouseup', onGlobalUp);
             };
 
-            el.onclick = (e) => { if (!isDragging) handler('click', e); };
-            el.oncontextmenu = (e) => { e.preventDefault(); handler('click', { ...e, button: 2 }); };
+            el.oncontextmenu = (e) => { e.preventDefault(); };
             el.onwheel = (e) => { e.preventDefault(); handler('scroll', e); };
             el.tabIndex = 0; 
         }
