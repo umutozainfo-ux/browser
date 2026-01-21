@@ -410,7 +410,7 @@ class BrowserInstance:
             "--mute-audio",
             "--disable-canvas-aa",
             "--disable-2d-canvas-clip-utils",
-            "--use-gl=desktop" if platform.system() != "Windows" else "--disable-gpu",
+            "--use-gl=angle" if platform.system() == "Windows" else "--use-gl=desktop",
             f"--window-size={self.fingerprint['viewport']['width']},{self.fingerprint['viewport']['height']}",
             # Additional anti-detection flags
             "--disable-automation",
@@ -423,9 +423,21 @@ class BrowserInstance:
             "--disable-hang-monitor",
             "--disable-prompt-on-repost",
             "--no-first-run",
-            "--enable-features=NetworkService,NetworkServiceInProcess",
+            "--enable-features=NetworkService,NetworkServiceInProcess,Vulkan",
             "--flag-switches-begin",
             "--flag-switches-end",
+            # Performance flags
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-breakpad",
+            "--disable-component-update",
+            "--disable-domain-reliability",
+            "--disable-features=AudioServiceOutOfProcess",
+            "--disable-ipc-flooding-protection",
+            "--disable-renderer-backgrounding",
+            "--enable-automation", # Keep for some features but hide via JS
+            "--force-color-profile=srgb",
+            "--js-flags=--max-old-space-size=4096",
         ]
 
         context_params = {
@@ -556,10 +568,10 @@ class BrowserInstance:
 
         await self.cdp.send("Page.startScreencast", {
             "format": "jpeg",
-            "quality": 80,
+            "quality": 60, # Reduced from 80 for speed
             "maxWidth": self.fingerprint["viewport"]["width"],
             "maxHeight": self.fingerprint["viewport"]["height"],
-            "everyNthFrame": 1
+            "everyNthFrame": 2 # Reduced from 1 to halve CPU load while staying smooth
         })
 
         try:
@@ -576,11 +588,12 @@ class BrowserInstance:
         """High-speed hybrid frame engine: CDP + Screenshot Fallback"""
         last_frame_count = 0
         while self.is_active:
-            await asyncio.sleep(0.1) # 10fps minimum guarantee
+            await asyncio.sleep(0.5) # Increased sleep from 0.1 to 0.5 to save CPU
             if self._frames_sent == last_frame_count:
                 # CDP is stalled or not sending, force a screenshot
                 try:
-                    screenshot = await self.page.screenshot(type="jpeg", quality=Config.JPEG_QUALITY, scale="css")
+                    # Use lower quality for fallback screenshot to be faster
+                    screenshot = await self.page.screenshot(type="jpeg", quality=40, scale="css")
                     b64_data = base64.b64encode(screenshot).decode('utf-8')
                     await self._distribute_frame(b64_data)
                 except: pass
