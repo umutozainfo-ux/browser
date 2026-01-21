@@ -86,30 +86,199 @@ img_executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 4)
 
 STEALTH_JS = r"""
 (() => {
-    // 1. Webdriver evasion
-    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+    // ============================================
+    // 1. AGGRESSIVE WEBDRIVER EVASION
+    // ============================================
+    // The key insight: navigator.webdriver should either:
+    // - Not exist at all (no property)
+    // - Return false (real Chrome when not automated)
+    // We'll make it return false AND hide it from property enumeration
     
+    // First, delete from prototype to remove the original
+    try {
+        delete Object.getPrototypeOf(navigator).webdriver;
+    } catch (e) {}
+    
+    // Define as false (real Chrome returns false when not automated)
+    Object.defineProperty(navigator, 'webdriver', {
+        get: () => false,
+        configurable: true,
+        enumerable: false  // Hide from enumeration
+    });
+    
+    // Intercept hasOwnProperty checks
+    const originalHasOwnProperty = Object.prototype.hasOwnProperty;
+    Object.prototype.hasOwnProperty = function(prop) {
+        if (prop === 'webdriver' && this === navigator) {
+            return false;  // Pretend it doesn't exist as own property
+        }
+        return originalHasOwnProperty.call(this, prop);
+    };
+    
+    // Spoof the property descriptor to look natural
+    const originalGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+    Object.getOwnPropertyDescriptor = function(obj, prop) {
+        if (prop === 'webdriver' && obj === navigator) {
+            return undefined;  // Hide from descriptor checks
+        }
+        return originalGetOwnPropertyDescriptor.apply(this, arguments);
+    };
+    
+    // Intercept property name enumeration
+    const originalGetOwnPropertyNames = Object.getOwnPropertyNames;
+    Object.getOwnPropertyNames = function(obj) {
+        const props = originalGetOwnPropertyNames.apply(this, arguments);
+        if (obj === navigator) {
+            return props.filter(p => p !== 'webdriver');
+        }
+        return props;
+    };
+    
+    // Also intercept Object.keys
+    const originalKeys = Object.keys;
+    Object.keys = function(obj) {
+        const keys = originalKeys.apply(this, arguments);
+        if (obj === navigator) {
+            return keys.filter(k => k !== 'webdriver');
+        }
+        return keys;
+    };
+
+    // ============================================
     // 2. WebGL Evasion
+    // ============================================
     const getParameter = WebGLRenderingContext.prototype.getParameter;
     WebGLRenderingContext.prototype.getParameter = function(p) {
         if (p === 37445) return 'Google Inc. (Intel)';
         if (p === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)';
         return getParameter.apply(this, arguments);
     };
+    
+    // Also handle WebGL2
+    if (typeof WebGL2RenderingContext !== 'undefined') {
+        const getParameter2 = WebGL2RenderingContext.prototype.getParameter;
+        WebGL2RenderingContext.prototype.getParameter = function(p) {
+            if (p === 37445) return 'Google Inc. (Intel)';
+            if (p === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)';
+            return getParameter2.apply(this, arguments);
+        };
+    }
 
+    // ============================================
     // 3. Hardware/Memory spoofing
-    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
-    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+    // ============================================
+    Object.defineProperty(navigator, 'deviceMemory', { get: () => 8, configurable: true });
+    Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8, configurable: true });
 
-    // 4. Plugin Mocking
-    const mockPlugins = [
-        { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-        { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }
-    ];
-    Object.defineProperty(navigator, 'plugins', { get: () => mockPlugins });
+    // ============================================
+    // 4. PROPER PluginArray MOCKING
+    // ============================================
+    // Create a proper PluginArray-like structure that passes instanceof checks
+    (function mockPlugins() {
+        // Create mock Plugin objects
+        function createPlugin(name, description, filename, mimeTypes) {
+            const plugin = Object.create(Plugin.prototype);
+            Object.defineProperties(plugin, {
+                name: { value: name, enumerable: true },
+                description: { value: description, enumerable: true },
+                filename: { value: filename, enumerable: true },
+                length: { value: mimeTypes.length, enumerable: true }
+            });
+            mimeTypes.forEach((mt, i) => {
+                const mimeType = Object.create(MimeType.prototype);
+                Object.defineProperties(mimeType, {
+                    type: { value: mt.type, enumerable: true },
+                    suffixes: { value: mt.suffixes, enumerable: true },
+                    description: { value: mt.description, enumerable: true },
+                    enabledPlugin: { value: plugin, enumerable: true }
+                });
+                Object.defineProperty(plugin, i, { value: mimeType, enumerable: true });
+            });
+            return plugin;
+        }
 
+        const pdfPlugin = createPlugin(
+            'PDF Viewer',
+            'Portable Document Format',
+            'internal-pdf-viewer',
+            [{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }]
+        );
+        
+        const chromePdfPlugin = createPlugin(
+            'Chrome PDF Viewer',
+            'Portable Document Format',
+            'internal-pdf-viewer',
+            [{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }]
+        );
+        
+        const chromiumPdfPlugin = createPlugin(
+            'Chromium PDF Viewer',
+            'Portable Document Format',
+            'internal-pdf-viewer',
+            [{ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' }]
+        );
+
+        // Create a proper PluginArray that inherits from PluginArray.prototype
+        const pluginsArray = Object.create(PluginArray.prototype);
+        const plugins = [pdfPlugin, chromePdfPlugin, chromiumPdfPlugin];
+        
+        plugins.forEach((plugin, i) => {
+            Object.defineProperty(pluginsArray, i, { value: plugin, enumerable: true });
+            Object.defineProperty(pluginsArray, plugin.name, { value: plugin, enumerable: false });
+        });
+        
+        Object.defineProperty(pluginsArray, 'length', { value: plugins.length, enumerable: true });
+        
+        // Add item() and namedItem() methods
+        pluginsArray.item = function(index) { return plugins[index] || null; };
+        pluginsArray.namedItem = function(name) { return plugins.find(p => p.name === name) || null; };
+        pluginsArray.refresh = function() {};
+        
+        // Make it iterable
+        pluginsArray[Symbol.iterator] = function* () {
+            for (let i = 0; i < plugins.length; i++) yield plugins[i];
+        };
+
+        Object.defineProperty(navigator, 'plugins', {
+            get: () => pluginsArray,
+            configurable: true
+        });
+        
+        // Also mock mimeTypes
+        const mimeTypesArray = Object.create(MimeTypeArray.prototype);
+        const mimeTypes = [
+            { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format', plugin: pdfPlugin }
+        ];
+        
+        mimeTypes.forEach((mt, i) => {
+            const mimeType = Object.create(MimeType.prototype);
+            Object.defineProperties(mimeType, {
+                type: { value: mt.type, enumerable: true },
+                suffixes: { value: mt.suffixes, enumerable: true },
+                description: { value: mt.description, enumerable: true },
+                enabledPlugin: { value: mt.plugin, enumerable: true }
+            });
+            Object.defineProperty(mimeTypesArray, i, { value: mimeType, enumerable: true });
+            Object.defineProperty(mimeTypesArray, mt.type, { value: mimeType, enumerable: false });
+        });
+        
+        Object.defineProperty(mimeTypesArray, 'length', { value: mimeTypes.length, enumerable: true });
+        mimeTypesArray.item = function(index) { return mimeTypes[index] || null; };
+        mimeTypesArray.namedItem = function(name) { return mimeTypes.find(m => m.type === name) || null; };
+        mimeTypesArray[Symbol.iterator] = function* () {
+            for (let i = 0; i < mimeTypes.length; i++) yield mimeTypes[i];
+        };
+        
+        Object.defineProperty(navigator, 'mimeTypes', {
+            get: () => mimeTypesArray,
+            configurable: true
+        });
+    })();
+
+    // ============================================
     // 5. Languages & Permissions
-    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    // ============================================
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'], configurable: true });
     const originalQuery = window.navigator.permissions.query;
     window.navigator.permissions.query = (parameters) => (
         parameters.name === 'notifications' ?
@@ -117,10 +286,21 @@ STEALTH_JS = r"""
         originalQuery(parameters)
     );
 
-    // 6. Chrome Object
+    // ============================================
+    // 6. Chrome Object (fully mock the runtime)
+    // ============================================
     window.chrome = {
         app: { isInstalled: false, InstallState: { DISABLED: 'DISABLED', INSTALLED: 'INSTALLED', NOT_INSTALLED: 'NOT_INSTALLED' }, RunningState: { CANNOT_RUN: 'CANNOT_RUN', READY_TO_RUN: 'READY_TO_RUN', RUNNING: 'RUNNING' } },
-        runtime: { OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' }, OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' }, PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' }, PlatformNaclArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' }, PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' }, RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' } },
+        runtime: { 
+            OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' }, 
+            OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' }, 
+            PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' }, 
+            PlatformNaclArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' }, 
+            PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' }, 
+            RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' },
+            connect: function() {},
+            sendMessage: function() {}
+        },
         loadTimes: () => ({
             requestTime: Date.now() / 1000 - 0.5,
             startLoadTime: Date.now() / 1000 - 0.5,
@@ -138,7 +318,9 @@ STEALTH_JS = r"""
         csi: () => ({ startE: Date.now() - 500, onloadT: Date.now(), pageT: 500.2, tran: 15 })
     };
 
-    // 7. Mouse Event Humanization (Prevent detection of synthetic events)
+    // ============================================
+    // 7. Mouse Event Humanization
+    // ============================================
     const originalDispatch = Element.prototype.dispatchEvent;
     Element.prototype.dispatchEvent = function(event) {
         if (event instanceof MouseEvent && !event.isTrusted) {
@@ -152,6 +334,23 @@ STEALTH_JS = r"""
     window.addEventListener('wheel', (e) => {
         if (e.ctrlKey) e.preventDefault();
     }, { passive: false });
+    
+    // ============================================
+    // 8. Additional Anti-Detection Measures
+    // ============================================
+    // Spoof the toString of overridden functions to look native
+    const nativeCode = 'function () { [native code] }';
+    const spoofFunctionToString = (fn, name) => {
+        const handler = {
+            apply: function(target, thisArg, args) {
+                if (thisArg === fn) {
+                    return `function ${name || ''}() { [native code] }`;
+                }
+                return target.apply(thisArg, args);
+            }
+        };
+        Function.prototype.toString = new Proxy(Function.prototype.toString, handler);
+    };
 })();
 """
 
@@ -213,6 +412,20 @@ class BrowserInstance:
             "--disable-2d-canvas-clip-utils",
             "--use-gl=desktop" if platform.system() != "Windows" else "--disable-gpu",
             f"--window-size={self.fingerprint['viewport']['width']},{self.fingerprint['viewport']['height']}",
+            # Additional anti-detection flags
+            "--disable-automation",
+            "--disable-extensions",
+            "--disable-default-apps",
+            "--disable-component-extensions-with-background-pages",
+            "--disable-background-networking",
+            "--disable-sync",
+            "--metrics-recording-only",
+            "--disable-hang-monitor",
+            "--disable-prompt-on-repost",
+            "--no-first-run",
+            "--enable-features=NetworkService,NetworkServiceInProcess",
+            "--flag-switches-begin",
+            "--flag-switches-end",
         ]
 
         context_params = {
@@ -271,6 +484,69 @@ class BrowserInstance:
         
         self.cdp = await self.context.new_cdp_session(self.page)
         logger.info(f"CDP Session started for {self.id}")
+        
+        # ============================================
+        # CRITICAL: CDP-LEVEL WEBDRIVER EVASION
+        # ============================================
+        # This runs BEFORE any page scripts, ensuring webdriver is hidden
+        # from even the earliest detection attempts
+        webdriver_evasion_script = """
+        (() => {
+            // Delete webdriver from Navigator prototype chain
+            Object.defineProperty(navigator, 'webdriver', {
+                get: () => false,
+                configurable: true
+            });
+            
+            // Also try to delete it from the prototype
+            try {
+                const proto = Object.getPrototypeOf(navigator);
+                if (proto.hasOwnProperty('webdriver')) {
+                    delete proto.webdriver;
+                }
+            } catch(e) {}
+            
+            // Intercept any future attempts to check webdriver
+            const originalHasOwnProperty = Object.prototype.hasOwnProperty;
+            Object.prototype.hasOwnProperty = function(prop) {
+                if (prop === 'webdriver' && this === navigator) {
+                    return false;
+                }
+                return originalHasOwnProperty.call(this, prop);
+            };
+            
+            // Intercept property descriptor checks
+            const originalGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+            Object.getOwnPropertyDescriptor = function(obj, prop) {
+                if (prop === 'webdriver' && (obj === navigator || obj === Object.getPrototypeOf(navigator))) {
+                    return undefined;
+                }
+                return originalGetOwnPropertyDescriptor.apply(this, arguments);
+            };
+            
+            // Intercept 'in' operator checks by modifying the prototype chain
+            const handler = {
+                has(target, key) {
+                    if (key === 'webdriver') return false;
+                    return key in target;
+                },
+                get(target, key, receiver) {
+                    if (key === 'webdriver') return undefined;
+                    return Reflect.get(target, key, receiver);
+                }
+            };
+        })();
+        """
+        
+        # Inject webdriver evasion at CDP level - runs before page loads
+        await self.cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+            "source": webdriver_evasion_script
+        })
+        
+        # Also inject the main stealth script at CDP level for extra coverage
+        await self.cdp.send("Page.addScriptToEvaluateOnNewDocument", {
+            "source": stealth_script
+        })
         
         # RESTORE: Mouse Tracking & Screencast
         self._mouse_x = 0
