@@ -14,8 +14,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY server.py .
 COPY static/ ./static/
 
-# Make port 8000 available to the world outside this container
-EXPOSE 8000
+# Make port 7860 available to the world outside this container
+EXPOSE 7860
 
 # Run server.py when the container launches
 CMD ["python", "server.py"]

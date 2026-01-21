@@ -19,15 +19,42 @@ class StealthNodeApp {
         // Bind methods
         this.init = this.init.bind(this);
         this.initHub = this.initHub.bind(this);
+        this.fetchState = this.fetchState.bind(this); // New method
         this.syncInstances = this.syncInstances.bind(this);
     }
 
     // Initialize the application
     init() {
+        this.fetchState(); // Initial sync
         this.initHub();
         this.bindGlobalEvents();
         this.showSkeletonLoading();
+
+        // Polling fallback every 5s in case WS is blocked
+        setInterval(() => this.fetchState(), 5000);
+
         console.log('[StealthNode] Application initialized');
+    }
+
+    async fetchState() {
+        try {
+            const res = await fetch('/api/nodes');
+            const data = await res.json();
+
+            // Only update if current view is browsers to avoid interference
+            if (this.currentView === 'browsers') {
+                const oldHash = this.getBrowserListHash();
+                this.nodes = data.nodes;
+                const newHash = this.getBrowserListHash();
+
+                if (oldHash !== newHash) {
+                    this.syncInstances();
+                }
+                this.updateStats();
+            }
+        } catch (e) {
+            console.error('[StealthNode] Failed to fetch state:', e);
+        }
     }
 
     // Show skeleton loading cards

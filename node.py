@@ -70,7 +70,7 @@ class FingerprintManager:
 
 class Config:
     NODE_ID = os.getenv("NODE_ID", f"node-{str(uuid.uuid4())[:6]}")
-    SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8000")
+    SERVER_URL = os.getenv("SERVER_URL", "https://server-latest-p0vo.onrender.com")
     NODE_HOST = os.getenv("NODE_HOST", "localhost")
     NODE_PORT = int(os.getenv("NODE_PORT", 8002))
     HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
@@ -575,7 +575,7 @@ class BrowserInstance:
         })
 
         try:
-            await self.page.goto("https://www.tiktok.com", timeout=60000, wait_until="domcontentloaded")
+            await self.page.goto("https://www.google.com", timeout=60000, wait_until="domcontentloaded")
         except Exception as e:
             logger.warning(f"Initial navigation timeout/error for {self.id}: {e}")
         
@@ -815,6 +815,74 @@ node_error = None
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(heartbeat_loop())
+    asyncio.create_task(command_loop())
+
+async def command_loop():
+    """Maintains a persistent websocket to the hub for receiving commands"""
+    while True:
+        try:
+            ws_url = Config.SERVER_URL.replace("http", "ws") + f"/ws/node/{Config.NODE_ID}"
+            logger.info(f"Connecting to command channel: {ws_url}")
+            
+            async with httpx.AsyncClient() as client:
+                # Use a websocket library or handle it via a task
+                # Since we are already using FastAPI/Uvicorn, we can use websockets library
+                import websockets
+                async with websockets.connect(ws_url) as ws:
+                    logger.info("Command channel connected")
+                    while True:
+                        msg = await ws.recv()
+                        data = json.loads(msg)
+                        
+                        task_id = data.get("task_id")
+                        command = data.get("command")
+                        payload = data.get("data", {})
+                        
+                        logger.info(f"Received Task [{command}]: {task_id}")
+                        result = None
+                        
+                        try:
+                            if command == "create":
+                                result = await create_browser_internal(payload.get("mode", "ephemeral"), payload.get("profile_id"))
+                            elif command == "get_profiles":
+                                result = await list_profiles()
+                            elif command == "delete_profile":
+                                result = await delete_profile(payload.get("profile_id"))
+                            elif command == "refresh":
+                                result = await node_refresh()
+                            
+                            await ws.send(json.dumps({
+                                "task_id": task_id,
+                                "result": result
+                            }))
+                        except Exception as te:
+                            logger.error(f"Task Execution Error: {te}")
+        except Exception as e:
+            logger.error(f"Command channel error: {e}")
+            await asyncio.sleep(5)
+
+async def create_browser_internal(mode: str = "ephemeral", profile_id: str = None):
+    """Helper for internal/websocket creation logic"""
+    if len(browsers) >= Config.MAX_BROWSERS:
+        return {"status": "error", "message": "Max browsers reached"}
+
+    if mode == "persistent":
+        active_profiles = {inst.profile_id for inst in browsers.values() if inst.mode == "persistent"}
+        if profile_id and profile_id in active_profiles:
+            return {"status": "error", "message": f"Profile {profile_id} is already in use"}
+        
+        if not profile_id:
+            profiles_dir = os.path.abspath("profiles")
+            if os.path.exists(profiles_dir):
+                available_folders = [d for d in os.listdir(profiles_dir) if os.path.isdir(os.path.join(profiles_dir, d))]
+                idle_profiles = [p for p in available_folders if p not in active_profiles]
+                if idle_profiles: profile_id = idle_profiles[0]
+
+    bid = str(uuid.uuid4())[:8]
+    instance = BrowserInstance(bid, mode=mode, profile_id=profile_id)
+    await instance.launch()
+    browsers[bid] = instance
+    return {"id": bid, "mode": mode, "profile_id": instance.profile_id}
 
 async def heartbeat_loop():
     global node_status, node_error
