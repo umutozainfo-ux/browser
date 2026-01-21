@@ -72,7 +72,7 @@ class Config:
     NODE_ID = os.getenv("NODE_ID", f"node-{str(uuid.uuid4())[:6]}")
     SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8000")
     NODE_HOST = os.getenv("NODE_HOST", "localhost")
-    NODE_PORT = int(os.getenv("NODE_PORT", 8001))
+    NODE_PORT = int(os.getenv("NODE_PORT", 8002))
     HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
     MAX_BROWSERS = int(os.getenv("MAX_BROWSERS", 20))
     HEARTBEAT_INTERVAL = 5
@@ -809,26 +809,38 @@ class BrowserInstance:
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 browsers: Dict[str, BrowserInstance] = {}
+node_status = "healthy"
+node_error = None
 
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(heartbeat_loop())
 
 async def heartbeat_loop():
+    global node_status, node_error
     node_url = f"http://{Config.NODE_HOST}:{Config.NODE_PORT}"
     while True:
         try:
             async with httpx.AsyncClient(timeout=2.0) as client:
+                browser_data = [
+                    {"id": b.id, "mode": b.mode, "profile_id": b.profile_id}
+                    for b in browsers.values()
+                ]
                 await client.post(
                     f"{Config.SERVER_URL}/register",
                     json={
                         "node_id": Config.NODE_ID,
                         "url": node_url,
                         "browsers_count": len(browsers),
-                        "browsers": list(browsers.keys())
+                        "browsers": browser_data,
+                        "status": node_status,
+                        "error": node_error
                     }
                 )
-        except: pass
+        except Exception as e:
+            logger.error(f"Heartbeat failed: {e}")
+            node_status = "error"
+            node_error = str(e)
         await asyncio.sleep(Config.HEARTBEAT_INTERVAL)
 
 @app.post("/create")
@@ -868,7 +880,18 @@ async def create_browser(request: Request):
         return {"id": bid, "mode": mode, "profile_id": instance.profile_id}
     except Exception as e:
         logger.error(f"API Create Error: {e}")
+        global node_status, node_error
+        node_status = "error"
+        node_error = f"Spawn error: {str(e)}"
         return {"status": "error", "message": str(e)}
+
+@app.post("/refresh")
+async def node_refresh():
+    """Manually clear node errors and force registration"""
+    global node_status, node_error
+    node_status = "healthy"
+    node_error = None
+    return {"status": "ok"}
 
 @app.get("/profiles")
 async def list_profiles():
@@ -931,7 +954,7 @@ async def webrtc_offer(bid: str, request: Request):
         # Manually create transceiver with explicit direction to avoid aiortc bugs
         pc.addTransceiver("video", direction="sendonly")
         sender = pc.getSenders()[0]
-        await sender.replaceTrack(track)
+        sender.replaceTrack(track)
         
         @pc.on("datachannel")
         def on_datachannel(channel):

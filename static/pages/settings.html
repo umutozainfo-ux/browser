@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="StealthNode Settings - Configure your distributed browser control system.">
+    <title>Settings | StealthNode</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="/static/css/main.css">
+
+    <!-- Additional Settings Styles -->
+    <style>
+        .settings-section {
+            background: var(--color-bg-card);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-xl);
+            margin-bottom: var(--space-xl);
+            overflow: hidden;
+        }
+
+        .settings-section-header {
+            padding: var(--space-lg);
+            border-bottom: 1px solid var(--color-border);
+            display: flex;
+            align-items: center;
+            gap: var(--space-md);
+        }
+
+        .settings-section-icon {
+            width: 40px;
+            height: 40px;
+            background: rgba(99, 102, 241, 0.1);
+            border-radius: var(--radius-md);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--color-accent);
+        }
+
+        .settings-section-icon svg {
+            width: 20px;
+            height: 20px;
+        }
+
+        .settings-section-title h3 {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 2px;
+        }
+
+        .settings-section-title p {
+            font-size: 0.8rem;
+            color: var(--color-text-muted);
+        }
+
+        .settings-section-body {
+            padding: var(--space-lg);
+        }
+
+        .settings-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: var(--space-md) 0;
+            border-bottom: 1px solid var(--color-border);
+        }
+
+        .settings-row:last-child {
+            border-bottom: none;
+        }
+
+        .settings-label {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .settings-label-primary {
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .settings-label-secondary {
+            font-size: 0.75rem;
+            color: var(--color-text-muted);
+        }
+
+        .node-list {
+            display: flex;
+            flex-direction: column;
+            gap: var(--space-md);
+        }
+
+        .node-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: var(--space-md);
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: var(--radius-md);
+            border: 1px solid var(--color-border);
+        }
+
+        .node-info {
+            display: flex;
+            align-items: center;
+            gap: var(--space-md);
+        }
+
+        .node-status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--color-success);
+            animation: pulse 2s infinite;
+        }
+
+        .node-status-indicator.offline {
+            background: var(--color-danger);
+            animation: none;
+        }
+
+        .node-details h4 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin-bottom: 2px;
+        }
+
+        .node-details p {
+            font-size: 0.75rem;
+            color: var(--color-text-muted);
+            font-family: var(--font-mono);
+        }
+
+        .node-stats {
+            display: flex;
+            gap: var(--space-lg);
+        }
+
+        .node-stat {
+            text-align: center;
+        }
+
+        .node-stat-value {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--color-accent);
+        }
+
+        .node-stat-label {
+            font-size: 0.65rem;
+            color: var(--color-text-muted);
+            text-transform: uppercase;
+        }
+
+        .about-content {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--space-xl);
+        }
+
+        .about-info {
+            flex: 1;
+            min-width: 300px;
+        }
+
+        .about-version {
+            font-size: 0.85rem;
+            color: var(--color-text-muted);
+            margin-top: var(--space-md);
+        }
+
+        .about-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: var(--space-md);
+        }
+
+        .about-stat {
+            background: rgba(0, 0, 0, 0.2);
+            padding: var(--space-lg);
+            border-radius: var(--radius-md);
+            text-align: center;
+        }
+
+        .about-stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--color-accent);
+            font-family: var(--font-mono);
+        }
+
+        .about-stat-label {
+            font-size: 0.7rem;
+            color: var(--color-text-muted);
+            text-transform: uppercase;
+            margin-top: var(--space-xs);
+        }
+
+        .keyboard-shortcuts {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: var(--space-md);
+        }
+
+        .shortcut-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: var(--space-sm) var(--space-md);
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: var(--radius-md);
+        }
+
+        .shortcut-keys {
+            display: flex;
+            gap: var(--space-xs);
+        }
+
+        .key {
+            background: var(--color-bg-tertiary);
+            border: 1px solid var(--color-border);
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-family: var(--font-mono);
+            font-size: 0.75rem;
+        }
+
+        .shortcut-action {
+            font-size: 0.85rem;
+            color: var(--color-text-secondary);
+        }
+    </style>
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧪</text></svg>">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-brand">
+                    <div class="sidebar-brand-icon">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+                        </svg>
+                    </div>
+                    <div class="sidebar-brand-text">
+                        <h1>Stealth<span>Node</span></h1>
+                        <p>Command Center</p>
+                    </div>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                <div class="nav-section">
+                    <div class="nav-section-title">Main</div>
+                    <a href="/" class="nav-item" data-view="browsers">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                        </svg>
+                        <span>Command Center</span>
+                    </a>
+                    <a href="/vault" class="nav-item" data-view="vault">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9l-2-2H5a2 2 0 01-2 2v10a2 2 0 012 2z" />
+                        </svg>
+                        <span>Profile Vault</span>
+                    </a>
+                    <a href="/settings" class="nav-item active" data-view="settings">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                        <span>Settings</span>
+                    </a>
+                </div>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="node-status">
+                    <div class="node-status-dot"></div>
+                    <span>Hub Connected</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="header">
+                <div class="header-left">
+                    <button class="btn btn-icon btn-ghost" id="sidebar-toggle" onclick="toggleSidebar()">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M4 6h16M4 12h16M4 18h16" />
+                        </svg>
+                    </button>
+                    <div class="breadcrumb">
+                        <span>Dashboard</span>
+                        <span class="breadcrumb-separator">/</span>
+                        <span class="text-accent">Settings</span>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Page Content -->
+            <div class="page-content">
+                <!-- Connected Nodes Section -->
+                <section class="settings-section">
+                    <div class="settings-section-header">
+                        <div class="settings-section-icon">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+                            </svg>
+                        </div>
+                        <div class="settings-section-title">
+                            <h3>Connected Nodes</h3>
+                            <p>View and manage connected browser nodes</p>
+                        </div>
+                        <button onclick="loadNodes()" class="btn btn-secondary btn-sm" style="margin-left: auto;">
+                            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                            Refresh All
+                        </button>
+                    </div>
+                    <div class="settings-section-body">
+                        <div id="node-list" class="node-list">
+                            <!-- Node items will be injected here -->
+                            <div class="node-item skeleton-loading">
+                                <div class="node-info">
+                                    <div class="skeleton" style="width: 10px; height: 10px; border-radius: 50%;"></div>
+                                    <div>
+                                        <div class="skeleton" style="width: 120px; height: 16px; margin-bottom: 6px;">
+                                        </div>
+                                        <div class="skeleton" style="width: 180px; height: 12px;"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Keyboard Shortcuts Section -->
+                <section class="settings-section">
+                    <div class="settings-section-header">
+                        <div class="settings-section-icon">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
+                            </svg>
+                        </div>
+                        <div class="settings-section-title">
+                            <h3>Keyboard Shortcuts</h3>
+                            <p>Quick reference for keyboard navigation</p>
+                        </div>
+                    </div>
+                    <div class="settings-section-body">
+                        <div class="keyboard-shortcuts">
+                            <div class="shortcut-item">
+                                <span class="shortcut-action">Navigate back</span>
+                                <div class="shortcut-keys">
+                                    <span class="key">←</span>
+                                </div>
+                            </div>
+                            <div class="shortcut-item">
+                                <span class="shortcut-action">Navigate forward</span>
+                                <div class="shortcut-keys">
+                                    <span class="key">→</span>
+                                </div>
+                            </div>
+                            <div class="shortcut-item">
+                                <span class="shortcut-action">Scroll up/down</span>
+                                <div class="shortcut-keys">
+                                    <span class="key">↑</span>
+                                    <span class="key">↓</span>
+                                </div>
+                            </div>
+                            <div class="shortcut-item">
+                                <span class="shortcut-action">Close modal</span>
+                                <div class="shortcut-keys">
+                                    <span class="key">Esc</span>
+                                </div>
+                            </div>
+                            <div class="shortcut-item">
+                                <span class="shortcut-action">Submit URL</span>
+                                <div class="shortcut-keys">
+                                    <span class="key">Enter</span>
+                                </div>
+                            </div>
+                            <div class="shortcut-item">
+                                <span class="shortcut-action">Tab navigation</span>
+                                <div class="shortcut-keys">
+                                    <span class="key">Tab</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- About Section -->
+                <section class="settings-section">
+                    <div class="settings-section-header">
+                        <div class="settings-section-icon">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                        </div>
+                        <div class="settings-section-title">
+                            <h3>About StealthNode</h3>
+                            <p>System information and statistics</p>
+                        </div>
+                    </div>
+                    <div class="settings-section-body">
+                        <div class="about-content">
+                            <div class="about-info">
+                                <h2 style="margin-bottom: var(--space-sm);">Stealth<span class="text-accent">Node</span>
+                                    Command Center</h2>
+                                <p class="text-muted">
+                                    A distributed browser control system designed for managing multiple
+                                    stealth browser instances across a network of nodes. Built with
+                                    performance, security, and ease of use in mind.
+                                </p>
+                                <p class="about-version">Version 2.0.0 • Modern Multi-Page UI</p>
+                            </div>
+                            <div class="about-stats" id="about-stats">
+                                <div class="about-stat">
+                                    <div class="about-stat-value" id="total-nodes">-</div>
+                                    <div class="about-stat-label">Nodes</div>
+                                </div>
+                                <div class="about-stat">
+                                    <div class="about-stat-value" id="total-browsers">-</div>
+                                    <div class="about-stat-label">Browsers</div>
+                                </div>
+                                <div class="about-stat">
+                                    <div class="about-stat-value" id="uptime">-</div>
+                                    <div class="about-stat-label">Status</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Scripts -->
+    <script>
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('open');
+        }
+
+        // Load node information
+        async function loadNodes() {
+            try {
+                const res = await fetch('/api/nodes');
+                const data = await res.json();
+                renderNodes(data.nodes);
+                updateStats(data);
+            } catch (e) {
+                console.error('Failed to load nodes:', e);
+            }
+        }
+
+        function renderNodes(nodes) {
+            const list = document.getElementById('node-list');
+            list.innerHTML = '';
+
+            const nodeEntries = Object.entries(nodes);
+
+            if (nodeEntries.length === 0) {
+                list.innerHTML = `
+                    <div class="empty-state" style="padding: var(--space-xl); text-align: center;">
+                        <p class="text-muted">No nodes connected</p>
+                    </div>
+                `;
+                return;
+            }
+
+            const now = Date.now() / 1000;
+
+            nodeEntries.forEach(([nodeId, node]) => {
+                const isOffline = now - node.last_seen > 20;
+                const hasError = node.status === 'error';
+                const item = document.createElement('div');
+                item.className = 'node-item';
+                if (hasError) item.style.borderColor = 'var(--color-danger)';
+
+                item.innerHTML = `
+                    <div class="node-info">
+                        <div class="node-status-indicator ${isOffline ? 'offline' : (hasError ? 'error' : '')}"></div>
+                        <div class="node-details">
+                            <div class="flex items-center gap-sm">
+                                <h4>${nodeId}</h4>
+                                ${hasError ? `<span class="badge badge-danger">ERROR</span>` : ''}
+                            </div>
+                            <p>${node.url}</p>
+                            ${node.error ? `<p style="color: var(--color-danger); font-size: 11px; margin-top: 4px;">Error: ${node.error}</p>` : ''}
+                        </div>
+                    </div>
+                    <div class="flex items-center gap-xl">
+                        <div class="node-stats">
+                            <div class="node-stat">
+                                <div class="node-stat-value">${node.browsers?.length || 0}</div>
+                                <div class="node-stat-label">Browsers</div>
+                            </div>
+                        </div>
+                        <div class="flex gap-sm">
+                            <button onclick="refreshNode('${nodeId}')" class="btn btn-icon btn-ghost" title="Reset Node Status">
+                                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                `;
+                list.appendChild(item);
+            });
+        }
+
+        async function refreshNode(nodeId) {
+            try {
+                const res = await fetch(`/api/refresh_node/${nodeId}`, { method: 'POST' });
+                const data = await res.json();
+                if (data.status === 'ok') {
+                    showToast(`Node ${nodeId} reset requested`, 'success');
+                    loadNodes();
+                } else {
+                    showToast(`Failed to reset node: ${data.detail || 'Unknown error'}`, 'error');
+                }
+            } catch (e) {
+                showToast(`Network error resetting node`, 'error');
+            }
+        }
+
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            if (!container) return;
+
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${type}`;
+            toast.style.display = 'flex';
+            toast.style.alignItems = 'center';
+            toast.style.gap = '12px';
+            toast.style.padding = '12px 20px';
+            toast.style.background = 'rgba(15, 23, 42, 0.9)';
+            toast.style.backdropFilter = 'blur(10px)';
+            toast.style.border = '1px solid var(--color-border)';
+            toast.style.borderRadius = '12px';
+            toast.style.marginBottom = '10px';
+            toast.style.color = 'white';
+            toast.style.fontSize = '14px';
+            toast.style.boxShadow = '0 10px 15px -3px rgba(0, 0, 0, 0.1)';
+            toast.style.animation = 'toast-in 0.3s ease';
+
+            toast.innerHTML = `<span>${message}</span>`;
+            container.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transform = 'translateY(10px)';
+                toast.style.transition = 'all 0.3s ease';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        function updateStats(data) {
+            document.getElementById('total-nodes').textContent = data.count || 0;
+
+            let totalBrowsers = 0;
+            Object.values(data.nodes || {}).forEach(node => {
+                totalBrowsers += node.browsers?.length || 0;
+            });
+            document.getElementById('total-browsers').textContent = totalBrowsers;
+            document.getElementById('uptime').textContent = '✓';
+        }
+
+        // Load data on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            loadNodes();
+            // Refresh every 5 seconds
+            setInterval(loadNodes, 5000);
+        });
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description"
+        content="StealthNode Profile Vault - Manage persistent browser profiles and sessions across all connected nodes.">
+    <title>Profile Vault | StealthNode</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="/static/css/main.css">
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧪</text></svg>">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-brand">
+                    <div class="sidebar-brand-icon">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+                        </svg>
+                    </div>
+                    <div class="sidebar-brand-text">
+                        <h1>Stealth<span>Node</span></h1>
+                        <p>Command Center</p>
+                    </div>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                <div class="nav-section">
+                    <div class="nav-section-title">Main</div>
+                    <a href="/" class="nav-item" data-view="browsers">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                        </svg>
+                        <span>Command Center</span>
+                    </a>
+                    <a href="/vault" class="nav-item active" data-view="vault">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9l-2-2H5a2 2 0 01-2 2v10a2 2 0 012 2z" />
+                        </svg>
+                        <span>Profile Vault</span>
+                        <span class="nav-badge" id="vault-count">0</span>
+                    </a>
+                    <a href="/settings" class="nav-item" data-view="settings">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                        <span>Settings</span>
+                    </a>
+                </div>
+
+                <div class="nav-section">
+                    <div class="nav-section-title">Quick Actions</div>
+                    <a href="/" class="nav-item">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                        </svg>
+                        <span>New Browser</span>
+                    </a>
+                    <div class="nav-item" onclick="vault.refresh()">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                        <span>Refresh Vault</span>
+                    </div>
+                </div>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="node-status">
+                    <div class="node-status-dot"></div>
+                    <span>Hub Connected</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="header">
+                <div class="header-left">
+                    <button class="btn btn-icon btn-ghost" id="sidebar-toggle" onclick="toggleSidebar()">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M4 6h16M4 12h16M4 18h16" />
+                        </svg>
+                    </button>
+                    <div class="breadcrumb">
+                        <span>Dashboard</span>
+                        <span class="breadcrumb-separator">/</span>
+                        <span class="text-accent">Profile Vault</span>
+                    </div>
+                </div>
+
+                <div class="header-right">
+                    <button onclick="vault.refresh()" class="btn btn-secondary">
+                        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                        Refresh
+                    </button>
+                </div>
+            </header>
+
+            <!-- Page Content -->
+            <div class="page-content">
+                <!-- Page Header -->
+                <div class="card" style="margin-bottom: var(--space-xl);">
+                    <div class="card-body" style="display: flex; align-items: center; justify-content: space-between;">
+                        <div>
+                            <h2 style="margin-bottom: var(--space-xs);">Persistent Profile Vault</h2>
+                            <p class="text-muted text-sm">
+                                Manage your stored browser sessions across all connected nodes.
+                                Launch saved profiles to resume sessions with existing cookies and state.
+                            </p>
+                        </div>
+                        <div class="flex gap-md items-center">
+                            <div style="text-align: right;">
+                                <div class="text-xs text-muted uppercase tracking-wide">Total Profiles</div>
+                                <div class="stat-value accent" id="vault-count-display" style="font-size: 2rem;">0</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Search and Filter Bar -->
+                <div class="control-panel" style="margin-bottom: var(--space-xl);">
+                    <div class="control-section" style="flex: 1;">
+                        <div class="input-group" style="flex: 1; max-width: 400px;">
+                            <div class="input-group-icon">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                </svg>
+                            </div>
+                            <input type="text" id="search-profiles" class="input" placeholder="Search profiles...">
+                        </div>
+                    </div>
+
+                    <div class="control-section">
+                        <a href="/" class="btn btn-primary">
+                            <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M12 4v16m8-8H4" />
+                            </svg>
+                            Create New Profile
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Profile Grid -->
+                <div id="vault-grid" class="profile-grid">
+                    <!-- Profile cards will be injected here -->
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Scripts -->
+    <script src="/static/js/vault.js"></script>
+
+    <script>
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('open');
+        }
+
+        // Search functionality
+        document.getElementById('search-profiles')?.addEventListener('input', (e) => {
+            const query = e.target.value.toLowerCase();
+            document.querySelectorAll('.profile-card').forEach(card => {
+                const name = card.querySelector('.profile-name')?.textContent.toLowerCase() || '';
+                card.style.display = name.includes(query) ? '' : 'none';
+            });
+        });
+
+        // Update count display
+        const observer = new MutationObserver(() => {
+            const count = document.getElementById('vault-count')?.textContent || '0';
+            const display = document.getElementById('vault-count-display');
+            if (display) display.textContent = count;
+        });
+
+        const badge = document.getElementById('vault-count');
+        if (badge) {
+            observer.observe(badge, { childList: true, characterData: true, subtree: true });
+        }
+    </script>
+</body>
+
+</html>

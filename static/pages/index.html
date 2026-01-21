@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description"
+        content="StealthNode Command Center - Distributed browser control system for managing stealth browser instances across multiple nodes.">
+    <title>Command Center | StealthNode</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="/static/css/main.css">
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧪</text></svg>">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-brand">
+                    <div class="sidebar-brand-icon">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+                        </svg>
+                    </div>
+                    <div class="sidebar-brand-text">
+                        <h1>Stealth<span>Node</span></h1>
+                        <p>Command Center</p>
+                    </div>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                <div class="nav-section">
+                    <div class="nav-section-title">Main</div>
+                    <a href="/" class="nav-item active" data-view="browsers">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                        </svg>
+                        <span>Command Center</span>
+                        <span class="nav-badge" id="browsers-badge">0</span>
+                    </a>
+                    <a href="/vault" class="nav-item" data-view="vault">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9l-2-2H5a2 2 0 01-2 2v10a2 2 0 012 2z" />
+                        </svg>
+                        <span>Profile Vault</span>
+                    </a>
+                    <a href="/settings" class="nav-item" data-view="settings">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                        <span>Settings</span>
+                    </a>
+                </div>
+
+                <div class="nav-section">
+                    <div class="nav-section-title">Quick Actions</div>
+                    <div class="nav-item" onclick="app.requestNewBrowser()">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                        </svg>
+                        <span>New Browser</span>
+                    </div>
+                    <div class="nav-item" onclick="app.selectAll()">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                        <span>Select All</span>
+                    </div>
+                </div>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="node-status">
+                    <div class="node-status-dot"></div>
+                    <span>Hub Connected</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="header">
+                <div class="header-left">
+                    <button class="btn btn-icon btn-ghost" id="sidebar-toggle" onclick="toggleSidebar()">
+                        <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M4 6h16M4 12h16M4 18h16" />
+                        </svg>
+                    </button>
+                    <div class="breadcrumb">
+                        <span>Dashboard</span>
+                        <span class="breadcrumb-separator">/</span>
+                        <span class="text-accent">Command Center</span>
+                    </div>
+                </div>
+
+                <div class="header-right">
+                    <div class="stats-bar">
+                        <div class="stat-item">
+                            <span class="stat-label">Nodes</span>
+                            <span class="stat-value" id="stat-nodes">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Browsers</span>
+                            <span class="stat-value" id="stat-browsers">0</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Selected</span>
+                            <span class="stat-value accent" id="stat-selected">0</span>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Page Content -->
+            <div class="page-content">
+                <!-- Control Panel -->
+                <div class="control-panel">
+                    <!-- Selection Controls -->
+                    <div class="control-section">
+                        <button onclick="app.selectAll()" class="btn btn-secondary btn-sm">Select All</button>
+                        <button onclick="app.deselectAll()" class="btn btn-danger btn-sm">Clear</button>
+                    </div>
+
+                    <div class="control-divider"></div>
+
+                    <!-- Follow Mode Toggle -->
+                    <div class="control-section">
+                        <label class="toggle">
+                            <input type="checkbox" id="follow-mode" class="toggle-input" onchange="app.toggleFollow()">
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-label">Follow Mode</span>
+                        </label>
+                    </div>
+
+                    <div class="control-divider"></div>
+
+                    <!-- Mass URL Navigation -->
+                    <div class="control-section" style="flex: 1;">
+                        <div class="input-group" style="flex: 1; max-width: 500px;">
+                            <div class="input-group-icon">
+                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+                                </svg>
+                            </div>
+                            <input type="text" id="mass-url" class="input"
+                                placeholder="Navigate all selected to URL...">
+                            <button onclick="app.massNavigate()" class="btn btn-primary btn-sm"
+                                style="margin: 4px;">Go</button>
+                        </div>
+                    </div>
+
+                    <div class="control-divider"></div>
+
+                    <!-- Mass Actions -->
+                    <div class="control-section">
+                        <button onclick="app.massAction('back')" class="btn btn-icon btn-secondary"
+                            title="Back Selected">
+                            <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M15 19l-7-7 7-7" />
+                            </svg>
+                        </button>
+                        <button onclick="app.massAction('forward')" class="btn btn-icon btn-secondary"
+                            title="Forward Selected">
+                            <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M9 5l7 7-7 7" />
+                            </svg>
+                        </button>
+                        <button onclick="app.massAction('refresh')" class="btn btn-icon btn-secondary"
+                            title="Refresh Selected">
+                            <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                            </svg>
+                        </button>
+                        <button onclick="app.massAction('close')" class="btn btn-icon btn-danger"
+                            title="Close Selected">
+                            <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                        </button>
+                    </div>
+
+                    <div class="control-divider"></div>
+
+                    <!-- Spawn Controls -->
+                    <div class="control-section">
+                        <div class="mode-switcher">
+                            <button id="mode-ephemeral" class="mode-btn active"
+                                onclick="app.setMode('ephemeral')">Ephemeral</button>
+                            <button id="mode-persistent" class="mode-btn"
+                                onclick="app.setMode('persistent')">Persistent</button>
+                        </div>
+                        <input type="text" id="profile-id" class="input hidden" placeholder="Profile ID"
+                            style="width: 120px;">
+                        <input type="number" id="batch-count" class="input-number" value="1" min="1" max="100">
+                        <button id="spawn-btn" onclick="app.requestNewBrowser()" class="btn btn-primary">
+                            <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M12 4v16m8-8H4" />
+                            </svg>
+                            Spawn
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Browser Grid -->
+                <div id="browser-grid" class="browser-grid">
+                    <!-- Browser cards will be injected here -->
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Fullscreen Modal -->
+    <div id="modal" class="modal-overlay">
+        <div class="modal-header">
+            <div class="modal-header-left">
+                <div class="modal-live-badge">Live Interaction</div>
+                <span id="modal-title" class="modal-title">NODE: -- / SESSION: --</span>
+            </div>
+            <div class="modal-header-right">
+                <div class="modal-nav-group">
+                    <button onclick="app.modalNav('back')" class="modal-nav-btn" title="Back">←</button>
+                    <button onclick="app.modalNav('forward')" class="modal-nav-btn" title="Forward">→</button>
+                    <button onclick="app.modalNav('refresh')" class="modal-nav-btn" title="Refresh">↻</button>
+                </div>
+                <input type="text" id="modal-url" class="modal-url-input" placeholder="Enter URL...">
+                <button onclick="app.modalNavGo()" class="btn btn-primary">Navigate</button>
+                <button onclick="app.closeModal()" class="btn btn-icon btn-danger" title="Close">
+                    <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+        </div>
+        <div class="modal-content">
+            <video id="modal-video" autoplay playsinline muted></video>
+            <canvas id="modal-canvas" class="hidden"></canvas>
+        </div>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Scripts -->
+    <script src="/static/js/app.js"></script>
+
+    <script>
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('open');
+        }
+
+        // Handle enter key on mass URL input
+        document.getElementById('mass-url').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') app.massNavigate();
+        });
+
+        // Handle enter key on modal URL input
+        document.getElementById('modal-url').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') app.modalNavGo();
+        });
+    </script>
+</body>
+
+</html>
