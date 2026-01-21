@@ -89,10 +89,37 @@ async def hub_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         if websocket in hub_clients: hub_clients.remove(websocket)
 
+@app.get("/api/profiles")
+async def get_all_profiles(username: str = Depends(get_current_username)):
+    """Fetch profiles from all active nodes"""
+    all_profiles = {}
+    now = time.time()
+    active_nodes = {nid: data for nid, data in nodes.items() if now - data["last_seen"] < NODE_TIMEOUT}
+    
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        tasks = [client.get(f"{node['url']}/profiles") for node in active_nodes.values()]
+        resps = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for (nid, node), resp in zip(active_nodes.items(), resps):
+            if isinstance(resp, httpx.Response) and resp.status_code == 200:
+                all_profiles[nid] = resp.json().get("profiles", [])
+    
+    return all_profiles
+
+@app.delete("/api/delete_profile/{node_id}/{profile_id}")
+async def delete_remote_profile(node_id: str, profile_id: str, username: str = Depends(get_current_username)):
+    if node_id not in nodes:
+        raise HTTPException(status_code=404, detail="Node not found")
+    
+    node_url = nodes[node_id]["url"]
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.delete(f"{node_url}/profiles/{profile_id}")
+        return resp.json()
+
 @app.get("/api/request_browser")
-async def request_browser(count: int = 1, username: str = Depends(get_current_username)):
+async def request_browser(count: int = 1, mode: str = "ephemeral", profile_id: str = None, username: str = Depends(get_current_username)):
     """Allocates multiple browsers across the cluster"""
-    if count < 1 or count > 10: count = 1
+    if count < 1 or count > 100: count = 1
     
     results = []
     for _ in range(count):
@@ -107,11 +134,14 @@ async def request_browser(count: int = 1, username: str = Depends(get_current_us
         node_url = nodes[best_node_id]["url"]
         
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.post(f"{node_url}/create")
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                payload = {"mode": mode, "profile_id": profile_id}
+                resp = await client.post(f"{node_url}/create", json=payload)
                 if resp.status_code == 200:
                     results.append(resp.json())
-        except: continue
+        except Exception as e: 
+            print(f"Failed to create browser on {best_node_id}: {e}")
+            continue
         
     return {"results": results, "count": len(results)}
 
@@ -188,8 +218,9 @@ async def dashboard():
             </div>
             <div>
                 <h1 class="text-2xl font-black tracking-tighter uppercase italic">Stealth<span class="text-brand">Node</span></h1>
-                <div class="flex items-center gap-2 text-[10px] text-slate-500 font-bold tracking-widest uppercase">
-                    <span class="dot-ping w-1.5 h-1.5 bg-green-500 rounded-full"></span> SYSTEM ONLINE
+                <div class="flex items-center gap-6 mt-1">
+                    <button onclick="switchView('browsers')" id="btn-view-browsers" class="text-[10px] font-bold tracking-widest uppercase transition text-brand">Command Center</button>
+                    <button onclick="switchView('vault')" id="btn-view-vault" class="text-[10px] font-bold tracking-widest uppercase transition text-slate-500 hover:text-white">Profile Vault</button>
                 </div>
             </div>
         </div>
@@ -201,9 +232,15 @@ async def dashboard():
                 <div class="flex flex-col"><span class="text-slate-500 uppercase">Sync Level</span><span id="stat-selected" class="text-brand font-bold">0 Synced</span></div>
             </div>
             
-            <div class="flex items-center bg-black/40 rounded-2xl p-1 border border-white/5">
-                <input id="batch-count" type="number" value="1" min="1" max="10" class="w-12 bg-transparent text-center text-sm font-bold outline-none">
-                <button onclick="requestNewBrowser()" id="req-btn" class="bg-brand hover:brightness-110 text-white px-6 py-2.5 rounded-xl text-xs font-extrabold transition-all shadow-xl shadow-brand/20 active:scale-95">
+            <div class="flex items-center bg-black/40 rounded-2xl p-1 border border-white/5 gap-2">
+                <div class="flex bg-slate-900 rounded-xl p-1 border border-white/5">
+                    <button onclick="setMode('ephemeral')" id="mode-ephemeral" class="px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all bg-brand text-white">EPHEMERAL</button>
+                    <button onclick="setMode('persistent')" id="mode-persistent" class="px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all text-slate-500 hover:text-white">PERSISTENT</button>
+                </div>
+                <input id="profile-id" type="text" placeholder="Profile ID (Optional)" class="hidden w-32 bg-transparent border-none outline-none text-[10px] font-bold px-2 text-brand">
+                <div class="w-px h-6 bg-white/10 mx-1"></div>
+                <input id="batch-count" type="number" value="1" min="1" max="100" class="w-10 bg-transparent text-center text-sm font-bold outline-none">
+                <button onclick="requestNewBrowser()" id="req-btn" class="bg-brand hover:brightness-110 text-white px-6 py-2.5 rounded-xl text-xs font-extrabold transition-all shadow-xl shadow-brand/20 active:scale-95 whitespace-nowrap">
                     SPAWN BATCH
                 </button>
             </div>
@@ -246,8 +283,28 @@ async def dashboard():
 
     <!-- Main View -->
     <main class="p-8">
-        <div id="grid">
-            <!-- Cards injected here -->
+        <div id="view-browsers" class="view-content">
+            <div id="grid">
+                <!-- Cards injected here -->
+            </div>
+        </div>
+
+        <div id="view-vault" class="view-content hidden">
+            <div class="glass p-8 rounded-[3rem] border-white/5 shadow-2xl">
+                <div class="flex items-center justify-between mb-8">
+                    <div>
+                        <h2 class="text-2xl font-black uppercase tracking-tighter">Persistent <span class="text-brand">Vault</span></h2>
+                        <p class="text-slate-500 text-xs font-medium uppercase tracking-widest mt-1">Manage stored browser sessions across all nodes</p>
+                    </div>
+                    <button onclick="refreshVault()" class="p-4 bg-white/5 hover:bg-white/10 rounded-2xl transition">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                    </button>
+                </div>
+                
+                <div id="vault-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    <!-- Profiles injected here -->
+                </div>
+            </div>
         </div>
     </main>
 
@@ -283,6 +340,93 @@ async def dashboard():
         let selectedKeys = new Set();
         let followMode = false;
         let activeModalKey = null;
+        let spawnMode = 'ephemeral';
+        let currentView = 'browsers';
+
+        function setMode(m) {
+            spawnMode = m;
+            document.getElementById('mode-ephemeral').className = m === 'ephemeral' ? 'px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all bg-brand text-white' : 'px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all text-slate-500 hover:text-white';
+            document.getElementById('mode-persistent').className = m === 'persistent' ? 'px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all bg-brand text-white' : 'px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all text-slate-500 hover:text-white';
+            document.getElementById('profile-id').classList.toggle('hidden', m !== 'persistent');
+        }
+
+        function switchView(v) {
+            currentView = v;
+            document.querySelectorAll('.view-content').forEach(el => el.classList.add('hidden'));
+            document.getElementById(`view-${v}`).classList.remove('hidden');
+            
+            document.getElementById('btn-view-browsers').className = v === 'browsers' ? 'text-[10px] font-bold tracking-widest uppercase transition text-brand' : 'text-[10px] font-bold tracking-widest uppercase transition text-slate-500 hover:text-white';
+            document.getElementById('btn-view-vault').className = v === 'vault' ? 'text-[10px] font-bold tracking-widest uppercase transition text-brand' : 'text-[10px] font-bold tracking-widest uppercase transition text-slate-500 hover:text-white';
+            
+            if (v === 'vault') refreshVault();
+        }
+
+        async function refreshVault() {
+            const list = document.getElementById('vault-list');
+            list.innerHTML = `<div class="col-span-full py-20 text-center animate-pulse text-slate-500 font-bold uppercase tracking-widest">Scanning Nodes for Artifacts...</div>`;
+            
+            try {
+                const res = await fetch('/api/profiles');
+                const data = await res.json();
+                list.innerHTML = '';
+                
+                Object.entries(data).forEach(([nid, profiles]) => {
+                    profiles.forEach(p => {
+                        const card = document.createElement('div');
+                        card.className = "glass-dark p-6 rounded-3xl border-white/5 hover:border-brand/40 transition group relative overflow-hidden";
+                        card.innerHTML = `
+                            <div class="flex items-start justify-between">
+                                <div class="w-12 h-12 bg-slate-800 rounded-2xl flex items-center justify-center text-brand mb-4">
+                                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9l-2-2H5a2 2 0 01-2 2v10a2 2 0 012 2z" /></svg>
+                                </div>
+                                <div class="text-[10px] font-bold px-3 py-1 bg-black/40 rounded-full border border-white/5 text-slate-500">NODE: ${nid}</div>
+                            </div>
+                            <h3 class="text-sm font-bold text-white mb-1 truncate">${p.profile_id}</h3>
+                            <p class="text-[10px] text-slate-500 font-mono uppercase tracking-tighter mb-6">${(p.size / 1024 / 1024).toFixed(2)} MB Storage</p>
+                            
+                            <div class="flex items-center gap-3">
+                                ${p.is_active ? 
+                                    `<div class="flex-1 bg-green-500/10 text-green-500 text-[10px] font-black py-2.5 rounded-xl text-center border border-green-500/20">SESSION ACTIVE</div>` :
+                                    `<button onclick="launchFromVault('${nid}', '${p.profile_id}')" class="flex-1 bg-brand text-white text-[10px] font-black py-2.5 rounded-xl hover:brightness-110 transition active:scale-95 uppercase tracking-widest">Launch Session</button>`
+                                }
+                                <button onclick="deleteProfile('${nid}', '${p.profile_id}')" class="p-2.5 bg-red-500/10 text-red-500 hover:bg-red-500 hover:text-white rounded-xl transition">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                                </button>
+                            </div>
+                        `;
+                        list.appendChild(card);
+                    });
+                });
+                
+                if (list.children.length === 0) {
+                    list.innerHTML = `<div class="col-span-full py-20 text-center text-slate-600 font-bold uppercase tracking-widest">No persistent profiles discovered.</div>`;
+                }
+            } catch (e) {
+                list.innerHTML = `<div class="col-span-full py-20 text-center text-red-500 font-bold uppercase tracking-widest">Sync Failed: ${e.message}</div>`;
+            }
+        }
+
+        async function launchFromVault(nid, pid) {
+            try {
+                debug(`Launching vault session: ${pid}`);
+                await fetch(`/api/request_browser?count=1&mode=persistent&profile_id=${encodeURIComponent(pid)}`);
+                switchView('browsers');
+            } catch (e) {
+                alert("Launch Error: " + e.message);
+            }
+        }
+
+        async function deleteProfile(nid, pid) {
+            if (!confirm(`Permanently delete stored profile ${pid}? This cannot be undone.`)) return;
+            try {
+                const res = await fetch(`/api/delete_profile/${nid}/${pid}`, { method: 'DELETE' });
+                const r = await res.json();
+                if (r.status === 'ok') refreshVault();
+                else alert(r.message || "Failed to delete");
+            } catch (e) {
+                alert("Comm Error: " + e.message);
+            }
+        }
 
         // Initialize Hub connection
         function initHub() {
@@ -741,10 +885,14 @@ async def dashboard():
         async function requestNewBrowser() {
             const btn = document.getElementById('req-btn');
             const count = document.getElementById('batch-count').value;
+            const profileId = document.getElementById('profile-id').value;
+            
             btn.disabled = true;
             btn.textContent = `SPAWNING ${count}...`;
             try {
-                await fetch(`/api/request_browser?count=${count}`);
+                let url = `/api/request_browser?count=${count}&mode=${spawnMode}`;
+                if (profileId) url += `&profile_id=${encodeURIComponent(profileId)}`;
+                await fetch(url);
             } catch (e) {
                 alert("Failed to allocate: " + e.message);
             }

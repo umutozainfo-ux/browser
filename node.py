@@ -25,6 +25,49 @@ import fractions
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("StealthNode")
 
+class FingerprintManager:
+    """Generates unique browser fingerprints for evasion and multi-accounting."""
+    
+    USER_AGENTS = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:122.0) Gecko/20100101 Firefox/122.0",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:122.0) Gecko/20100101 Firefox/122.0",
+    ]
+
+    @staticmethod
+    def generate():
+        import random
+        # Randomize hardware specs
+        cores = random.choice([4, 8, 12, 16])
+        memory = random.choice([4, 8, 16, 32])
+        
+        # Randomize viewport slightly
+        width = 1280 + random.randint(-20, 20)
+        height = 720 + random.randint(-20, 20)
+        
+        # Randomize Locales/Timezones
+        locales = ["en-US", "en-GB", "fr-FR", "de-DE", "es-ES"]
+        timezones = ["America/New_York", "Europe/London", "Europe/Paris", "Europe/Berlin", "Europe/Madrid"]
+        idx = random.randint(0, len(locales)-1)
+        
+        return {
+            "user_agent": random.choice(FingerprintManager.USER_AGENTS),
+            "viewport": {"width": width, "height": height},
+            "device_memory": memory,
+            "hardware_concurrency": cores,
+            "locale": locales[idx],
+            "timezone_id": timezones[idx],
+            "webgl_vendor": random.choice(["Google Inc. (Intel)", "Google Inc. (NVIDIA)", "Google Inc. (AMD)"]),
+            "webgl_renderer": random.choice([
+                "ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)",
+                "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+                "ANGLE (AMD, Radeon RX 6600 Direct3D11 vs_5_0 ps_5_0, D3D11)"
+            ])
+        }
+
 class Config:
     NODE_ID = os.getenv("NODE_ID", f"node-{str(uuid.uuid4())[:6]}")
     SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8000")
@@ -130,8 +173,12 @@ class BrowserVideoTrack(MediaStreamTrack):
         except: pass
 
 class BrowserInstance:
-    def __init__(self, bid: str):
+    def __init__(self, bid: str, mode: str = "ephemeral", profile_id: Optional[str] = None):
         self.id = bid
+        self.mode = mode
+        self.profile_id = profile_id or f"prof_{bid}"
+        self.fingerprint = FingerprintManager.generate()
+        
         self.playwright = None
         self.browser = None
         self.context = None
@@ -144,12 +191,18 @@ class BrowserInstance:
         self._frames_sent = 0
         self._last_frame_log = time.time()
         self.input_lock = asyncio.Lock()
+        
+        # Path for persistent profiles
+        self.profile_path = os.path.abspath(f"profiles/{self.profile_id}")
+        if self.mode == "persistent":
+             os.makedirs(self.profile_path, exist_ok=True)
+             logger.info(f"Initialized persistent profile at {self.profile_path}")
 
     async def launch(self):
-        logger.info(f"Launching browser {self.id}...")
+        logger.info(f"Launching {self.mode} browser {self.id} with profile {self.profile_id}...")
         self.playwright = await async_playwright().start()
         
-        args = [
+        launch_args = [
             "--disable-blink-features=AutomationControlled",
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -159,53 +212,89 @@ class BrowserInstance:
             "--disable-canvas-aa",
             "--disable-2d-canvas-clip-utils",
             "--use-gl=desktop" if platform.system() != "Windows" else "--disable-gpu",
+            f"--window-size={self.fingerprint['viewport']['width']},{self.fingerprint['viewport']['height']}",
         ]
 
-        self.browser = await self.playwright.chromium.launch(
-            headless=Config.HEADLESS,
-            args=args,
-            channel="chrome"
-        )
+        context_params = {
+            "viewport": self.fingerprint["viewport"],
+            "user_agent": self.fingerprint["user_agent"],
+            "java_script_enabled": True,
+            "bypass_csp": True,
+            "ignore_https_errors": True,
+            "color_scheme": 'dark',
+            "locale": self.fingerprint["locale"],
+            "timezone_id": self.fingerprint["timezone_id"],
+        }
+
+        try:
+            if self.mode == "persistent":
+                # Ensure path is absolutely clean for Windows
+                self.profile_path = os.path.normpath(self.profile_path)
+                os.makedirs(self.profile_path, exist_ok=True)
+                
+                # Persistent mode: Stores cookies, sessions, etc.
+                self.context = await self.playwright.chromium.launch_persistent_context(
+                    user_data_dir=self.profile_path,
+                    headless=Config.HEADLESS,
+                    args=launch_args,
+                    channel="chrome",
+                    handle_sigint=False,
+                    handle_sigterm=False,
+                    handle_sighup=False,
+                    **context_params
+                )
+                if self.context.pages:
+                    self.page = self.context.pages[0]
+                else:
+                    self.page = await self.context.new_page()
+            else:
+                # Ephemeral mode: Fresh start, no data saved
+                self.browser = await self.playwright.chromium.launch(
+                    headless=Config.HEADLESS,
+                    args=launch_args,
+                    channel="chrome"
+                )
+                self.context = await self.browser.new_context(**context_params)
+                self.page = await self.context.new_page()
+        except Exception as e:
+            logger.error(f"Launch failed for {self.id}: {str(e)}")
+            raise e
         
-        self.context = await self.browser.new_context(
-            viewport={"width": Config.WIDTH, "height": Config.HEIGHT},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            java_script_enabled=True,
-            bypass_csp=True,
-            ignore_https_errors=True,
-            color_scheme='dark',
-            locale='en-US',
-            timezone_id='America/New_York'
-        )
-        
-        await self.context.add_init_script(STEALTH_JS)
-        self.page = await self.context.new_page()
+        # Dynamic Stealth Injection with Fingerprint
+        stealth_script = STEALTH_JS.replace("'Google Inc. (Intel)'", f"'{self.fingerprint['webgl_vendor']}'")
+        stealth_script = stealth_script.replace("'ANGLE (Intel, Intel(R) UHD Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)'", f"'{self.fingerprint['webgl_renderer']}'")
+        # Add hardware concurrency and memory to JS injection
+        stealth_script = stealth_script.replace("deviceMemory', { get: () => 8 }", f"deviceMemory', {{ get: () => {self.fingerprint['device_memory']} }}")
+        stealth_script = stealth_script.replace("hardwareConcurrency', { get: () => 8 }", f"hardwareConcurrency', {{ get: () => {self.fingerprint['hardware_concurrency']} }}")
+
+        await self.context.add_init_script(stealth_script)
         
         self.cdp = await self.context.new_cdp_session(self.page)
         logger.info(f"CDP Session started for {self.id}")
         
-        self.cdp.on("Page.screencastFrame", self._on_frame)
-        
-        # Tracking for mouse state
+        # RESTORE: Mouse Tracking & Screencast
         self._mouse_x = 0
         self._mouse_y = 0
         self._mouse_down = False
-        
+        self.cdp.on("Page.screencastFrame", self._on_frame)
+
         await self.cdp.send("Page.startScreencast", {
             "format": "jpeg",
-            "quality": 80, # Improved quality for CAPTCHA solving
-            "maxWidth": Config.WIDTH,
-            "maxHeight": Config.HEIGHT,
+            "quality": 80,
+            "maxWidth": self.fingerprint["viewport"]["width"],
+            "maxHeight": self.fingerprint["viewport"]["height"],
             "everyNthFrame": 1
         })
-        logger.info(f"Screencast started for {self.id}")
+
+        try:
+            await self.page.goto("https://www.tiktok.com", timeout=60000, wait_until="domcontentloaded")
+        except Exception as e:
+            logger.warning(f"Initial navigation timeout/error for {self.id}: {e}")
         
-        await self.page.goto("https://www.tiktok.com") # Changed default for tests
         self.is_active = True
         
-        # Start the High-Speed Frame Engine (Hybrid)
         asyncio.create_task(self._frame_engine())
-        logger.info(f"Browser {self.id} ready.")
+        logger.info(f"Browser {self.id} ({self.mode}) ready.")
 
     async def _frame_engine(self):
         """High-speed hybrid frame engine: CDP + Screenshot Fallback"""
@@ -454,14 +543,78 @@ async def heartbeat_loop():
         await asyncio.sleep(Config.HEARTBEAT_INTERVAL)
 
 @app.post("/create")
-async def create_browser():
-    if len(browsers) >= Config.MAX_BROWSERS:
-        return {"status": "error", "message": "Max browsers reached"}
-    bid = str(uuid.uuid4())[:8]
-    instance = BrowserInstance(bid)
-    await instance.launch()
-    browsers[bid] = instance
-    return {"id": bid}
+async def create_browser(request: Request):
+    try:
+        try:
+            data = await request.json()
+        except:
+            data = {}
+            
+        mode = data.get("mode", "ephemeral")
+        profile_id = data.get("profile_id")
+        
+        if len(browsers) >= Config.MAX_BROWSERS:
+            return {"status": "error", "message": "Max browsers reached"}
+
+        # Logic for professional profile reuse
+        if mode == "persistent":
+            active_profiles = {inst.profile_id for inst in browsers.values() if inst.mode == "persistent"}
+            
+            if profile_id:
+                if profile_id in active_profiles:
+                     return {"status": "error", "message": f"Profile {profile_id} is already in use"}
+            else:
+                profiles_dir = os.path.abspath("profiles")
+                if os.path.exists(profiles_dir):
+                    available_folders = [d for d in os.listdir(profiles_dir) if os.path.isdir(os.path.join(profiles_dir, d))]
+                    idle_profiles = [p for p in available_folders if p not in active_profiles]
+                    if idle_profiles:
+                        profile_id = idle_profiles[0]
+                        logger.info(f"Reusing idle persistent profile: {profile_id}")
+
+        bid = str(uuid.uuid4())[:8]
+        instance = BrowserInstance(bid, mode=mode, profile_id=profile_id)
+        await instance.launch()
+        browsers[bid] = instance
+        return {"id": bid, "mode": mode, "profile_id": instance.profile_id}
+    except Exception as e:
+        logger.error(f"API Create Error: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.get("/profiles")
+async def list_profiles():
+    """List all stored profiles and their status"""
+    profiles_dir = os.path.abspath("profiles")
+    if not os.path.exists(profiles_dir):
+        return {"profiles": []}
+    
+    active_profiles = {inst.profile_id: inst.id for inst in browsers.values() if inst.mode == "persistent"}
+    
+    results = []
+    for d in os.listdir(profiles_dir):
+        path = os.path.join(profiles_dir, d)
+        if os.path.isdir(path):
+            results.append({
+                "profile_id": d,
+                "is_active": d in active_profiles,
+                "browser_id": active_profiles.get(d),
+                "size": sum(f.stat().st_size for f in os.scandir(path) if f.is_file()) # Basic size calc
+            })
+    return {"profiles": results}
+
+@app.delete("/profiles/{profile_id}")
+async def delete_profile(profile_id: str):
+    """Delete a profile if it's not active"""
+    active_profiles = {inst.profile_id for inst in browsers.values() if inst.mode == "persistent"}
+    if profile_id in active_profiles:
+        return {"status": "error", "message": "Cannot delete an active profile"}
+    
+    import shutil
+    path = os.path.abspath(f"profiles/{profile_id}")
+    if os.path.exists(path):
+        shutil.rmtree(path)
+        return {"status": "ok"}
+    return {"status": "error", "message": "Profile not found"}
 
 @app.post("/close/{bid}")
 async def close_browser(bid: str):
