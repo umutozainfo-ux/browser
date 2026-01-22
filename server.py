@@ -168,30 +168,47 @@ async def broadcast_hub():
     for client, user in list(hub_clients.items()):
         # Filter nodes/browsers for this specific user
         filtered_nodes = {}
+        total_user_browsers = 0
+        
         for nid, data in nodes.items():
-            if now - data["last_seen"] > NODE_TIMEOUT: continue
+            if now - data["last_seen"] > NODE_TIMEOUT:
+                continue
             
             # Strict Isolation: Only show and allow control of browsers owned by this user
             raw_browsers = data.get("browsers", [])
-            filtered_browsers = [b for b in raw_browsers if isinstance(b, dict) and b.get("owner") == user["username"]]
+            filtered_browsers = []
+            
+            for b in raw_browsers:
+                if isinstance(b, dict) and b.get("owner") == user["username"]:
+                    # Ensure each browser has all required fields
+                    filtered_browsers.append({
+                        "id": b.get("id"),
+                        "mode": b.get("mode", "ephemeral"),
+                        "profile_id": b.get("profile_id"),
+                        "owner": b.get("owner")
+                    })
+            
+            user_browser_count = len(filtered_browsers)
+            total_user_browsers += user_browser_count
             
             filtered_nodes[nid] = {
-                "browsers_count": len(filtered_browsers),
-                "browsers": filtered_browsers, 
-                "status": data["status"],
+                "url": data.get("url"),  # Include URL for WebSocket connections
+                "browsers_count": user_browser_count,
+                "browsers": filtered_browsers,
+                "status": data.get("status", "unknown"),
                 "last_seen": data["last_seen"]
             }
 
         summary = {
             "type": "update",
             "nodes": filtered_nodes,
-            "total_browsers": sum(n["browsers_count"] for n in filtered_nodes.values()),
-            "total_nodes": len(filtered_nodes)
+            "total_browsers": total_user_browsers,
+            "total_nodes": len([n for n in filtered_nodes.values() if n["browsers_count"] > 0])
         }
         
-        try: 
+        try:
             await client.send_json(summary)
-        except: 
+        except:
             hub_clients.pop(client, None)
 
 # ======================================================================
@@ -200,26 +217,54 @@ async def broadcast_hub():
 
 @app.post("/register")
 async def register_node(info: NodeInfo):
-    """Nodes call this to announce presence. Optimized for high scale."""
+    """Nodes call this to announce presence. Optimized for high scale.
+    
+    This endpoint handles browser list synchronization carefully to ensure
+    accurate counting:
+    1. When node sends a full browser list, it becomes the source of truth
+    2. When node sends delta (no browsers), we preserve existing list
+    3. Browser IDs are deduplicated to prevent double-counting
+    """
     old_data = nodes.get(info.node_id)
     
     # Delta Logic: If node didn't send browsers, use the old ones
     new_browsers = info.browsers
     if new_browsers is None and old_data:
         new_browsers = old_data.get("browsers", [])
+    elif new_browsers is not None:
+        # Node sent a full browser list - this is the authoritative source
+        # Deduplicate by browser ID to ensure accurate counting
+        seen_ids = set()
+        deduplicated = []
+        for browser in new_browsers:
+            bid = browser.get("id") if isinstance(browser, dict) else browser
+            if bid and bid not in seen_ids:
+                seen_ids.add(bid)
+                deduplicated.append(browser)
+        new_browsers = deduplicated
     
     # Check if a broadcast is actually needed
     changed = False
     if not old_data:
         changed = True
-    elif (new_browsers != old_data.get("browsers") or 
-          info.status != old_data.get("status") or
-          info.browsers_count != old_data.get("browsers_count")):
-        changed = True
+    else:
+        # Compare browser lists by ID to detect actual changes
+        old_ids = {
+            b.get("id") if isinstance(b, dict) else b
+            for b in old_data.get("browsers", [])
+        }
+        new_ids = {
+            b.get("id") if isinstance(b, dict) else b
+            for b in (new_browsers or [])
+        }
+        if (old_ids != new_ids or
+            info.status != old_data.get("status") or
+            info.browsers_count != len(new_browsers or [])):
+            changed = True
         
     nodes[info.node_id] = {
         "url": info.url,
-        "browsers_count": info.browsers_count,
+        "browsers_count": len(new_browsers or []),  # Use actual count, not reported count
         "browsers": new_browsers or [],
         "status": info.status,
         "error": info.error,
@@ -375,23 +420,41 @@ async def close_node_browser(node_id: str, browser_id: str, current_user: sqlite
     
     # Find the browser in the node's list
     browser = None
-    for b in browsers_list:
+    browser_index = -1
+    for i, b in enumerate(browsers_list):
         if isinstance(b, dict) and b.get("id") == browser_id:
             browser = b
+            browser_index = i
             break
         elif b == browser_id:
             # Legacy case: fallback to old list format if needed
             browser = {"id": b, "owner": "system"}
+            browser_index = i
             break
 
     if not browser:
         raise HTTPException(status_code=404, detail="Browser not found on this node")
     
-    if browser.get("owner") != current_user["username"]:
+    # Check ownership - admins can close any browser
+    is_admin = bool(current_user["is_admin"])
+    if not is_admin and browser.get("owner") != current_user["username"]:
         raise HTTPException(status_code=403, detail="Unauthorized: You do not own this browser")
 
     result = await send_node_command(node_id, "close_browser", {"browser_id": browser_id})
-    if result: return result
+    
+    # Immediately update local state for accurate counting
+    # This ensures the user sees the correct count right away
+    if browser_index >= 0 and node_id in nodes:
+        try:
+            nodes[node_id]["browsers"].pop(browser_index)
+            nodes[node_id]["browsers_count"] = len(nodes[node_id]["browsers"])
+            # Trigger immediate broadcast so UI updates
+            asyncio.create_task(broadcast_hub())
+        except (IndexError, KeyError):
+            pass  # Browser may have already been removed by heartbeat
+    
+    if result:
+        return result
     
     # Fallback to direct HTTP
     node_url = nodes[node_id]["url"]
@@ -430,9 +493,18 @@ async def create_browser_on_node(node_id: str, mode: str, profile_id: str, owner
     return None
 
 def get_user_browser_count(username: str) -> int:
-    """Count browsers currently owned by a user across all nodes"""
+    """Count browsers currently owned by a user across all ACTIVE nodes only.
+    
+    This ensures accurate counting by:
+    1. Only counting browsers from nodes that are online (within NODE_TIMEOUT)
+    2. Properly checking browser ownership
+    """
     count = 0
+    now = time.time()
     for node_data in nodes.values():
+        # Skip offline/stale nodes - their browser data may be outdated
+        if now - node_data.get("last_seen", 0) > NODE_TIMEOUT:
+            continue
         for browser in node_data.get("browsers", []):
             if isinstance(browser, dict) and browser.get("owner") == username:
                 count += 1
@@ -499,11 +571,26 @@ async def request_browser(count: int = 1, mode: str = "ephemeral", profile_id: s
                 failed += 1
             elif isinstance(result, dict) and "id" in result:
                 results.append(result)
-                # Optimistic Real-time Update
+                # Optimistic Real-time Update - but check for duplicates first
                 if node_id in nodes:
-                    if "browsers" not in nodes[node_id]: nodes[node_id]["browsers"] = []
-                    nodes[node_id]["browsers"].append(result)
-                    nodes[node_id]["browsers_count"] = len(nodes[node_id]["browsers"])
+                    if "browsers" not in nodes[node_id]:
+                        nodes[node_id]["browsers"] = []
+                    
+                    # Prevent duplicate entries by checking if browser ID already exists
+                    existing_ids = {
+                        b.get("id") if isinstance(b, dict) else b
+                        for b in nodes[node_id]["browsers"]
+                    }
+                    if result.get("id") not in existing_ids:
+                        # Add owner info to the result for proper filtering
+                        browser_entry = {
+                            "id": result.get("id"),
+                            "mode": result.get("mode", "ephemeral"),
+                            "profile_id": result.get("profile_id"),
+                            "owner": username  # Use the requesting user's username
+                        }
+                        nodes[node_id]["browsers"].append(browser_entry)
+                        nodes[node_id]["browsers_count"] = len(nodes[node_id]["browsers"])
             else:
                 failed += 1
     
@@ -585,6 +672,41 @@ async def get_me(current_user: sqlite3.Row = Depends(get_current_user)):
         "browser_limit": browser_limit,
         "browsers_active": current_count,
         "browsers_available": browser_limit - current_count if browser_limit != -1 else -1
+    }
+
+@app.get("/api/my_browsers")
+async def get_my_browsers(current_user: sqlite3.Row = Depends(get_current_user)):
+    """Get detailed list of all browsers owned by the current user.
+    
+    This provides an accurate, authoritative count of browsers for the user,
+    only counting browsers from active nodes.
+    """
+    username = current_user["username"]
+    now = time.time()
+    my_browsers = []
+    
+    for nid, data in nodes.items():
+        # Skip offline/stale nodes
+        if now - data.get("last_seen", 0) > NODE_TIMEOUT:
+            continue
+        
+        for browser in data.get("browsers", []):
+            if isinstance(browser, dict) and browser.get("owner") == username:
+                my_browsers.append({
+                    "id": browser.get("id"),
+                    "node_id": nid,
+                    "mode": browser.get("mode", "ephemeral"),
+                    "profile_id": browser.get("profile_id"),
+                    "owner": username
+                })
+    
+    browser_limit = current_user["browser_limit"] if "browser_limit" in current_user.keys() else 10
+    
+    return {
+        "browsers": my_browsers,
+        "count": len(my_browsers),
+        "limit": browser_limit,
+        "available": browser_limit - len(my_browsers) if browser_limit != -1 else -1
     }
 
 # ======================================================================
@@ -817,4 +939,5 @@ if __name__ == "__main__":
       - Health Check:   http://localhost:7860/health
     """)
     uvicorn.run(app, host="0.0.0.0", port=7860)
+
 

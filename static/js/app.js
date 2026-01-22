@@ -126,7 +126,12 @@ class StealthNodeApp {
     // Update statistics display
     updateStats() {
         let totalBrowsers = 0;
-        Object.values(this.nodes).forEach(n => totalBrowsers += n.browsers.length);
+        Object.values(this.nodes).forEach(n => {
+            // Safely count browsers, handling both array and undefined cases
+            if (n.browsers && Array.isArray(n.browsers)) {
+                totalBrowsers += n.browsers.length;
+            }
+        });
 
         const nodesEl = document.getElementById('stat-nodes');
         const browsersEl = document.getElementById('stat-browsers');
@@ -145,9 +150,15 @@ class StealthNodeApp {
     syncInstances() {
         const currentKeys = new Set();
 
+        // Build set of current browser keys - properly extract ID from object or string
         Object.entries(this.nodes).forEach(([nid, node]) => {
-            node.browsers.forEach(bid => {
-                currentKeys.add(`${nid}::${bid}`);
+            if (!node.browsers || !Array.isArray(node.browsers)) return;
+            node.browsers.forEach(bidInfo => {
+                // bidInfo might be a string (id) or object {id, profile_id, mode, ...}
+                const bid = typeof bidInfo === 'object' && bidInfo !== null ? bidInfo.id : bidInfo;
+                if (bid) {
+                    currentKeys.add(`${nid}::${bid}`);
+                }
             });
         });
 
@@ -166,11 +177,14 @@ class StealthNodeApp {
 
         // Add new instances
         Object.entries(this.nodes).forEach(([nid, node]) => {
+            if (!node.browsers || !Array.isArray(node.browsers)) return;
             node.browsers.forEach(bidInfo => {
                 // bidInfo might be a string (id) or object {id, profile_id, mode, ...}
-                const bid = typeof bidInfo === 'object' ? bidInfo.id : bidInfo;
-                const mode = typeof bidInfo === 'object' ? bidInfo.mode : 'ephemeral';
-                const profileId = typeof bidInfo === 'object' ? bidInfo.profile_id : null;
+                const bid = typeof bidInfo === 'object' && bidInfo !== null ? bidInfo.id : bidInfo;
+                if (!bid) return; // Skip invalid entries
+                
+                const mode = typeof bidInfo === 'object' && bidInfo !== null ? bidInfo.mode : 'ephemeral';
+                const profileId = typeof bidInfo === 'object' && bidInfo !== null ? bidInfo.profile_id : null;
                 const key = `${nid}::${bid}`;
 
                 let inst = this.instances.find(i => i.key === key);
@@ -191,9 +205,10 @@ class StealthNodeApp {
     getBrowserListHash() {
         const keys = [];
         Object.values(this.nodes).forEach(node => {
+            if (!node.browsers || !Array.isArray(node.browsers)) return;
             node.browsers.forEach(b => {
-                const id = typeof b === 'object' ? b.id : b;
-                keys.push(id);
+                const id = typeof b === 'object' && b !== null ? b.id : b;
+                if (id) keys.push(id);
             });
         });
         return keys.sort().join(',');

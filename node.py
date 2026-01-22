@@ -863,8 +863,10 @@ async def command_loop():
                                 elif command == "close_browser":
                                     bid = payload.get("browser_id")
                                     if bid in browsers:
-                                        await browsers[bid].close()
-                                        result = {"status": "ok"}
+                                        await browsers[bid].cleanup()
+                                        # Immediately remove from dict for accurate counting
+                                        del browsers[bid]
+                                        result = {"status": "ok", "browser_id": bid}
                                     else:
                                         result = {"status": "error", "message": "Browser not found"}
                             except Exception as te:
