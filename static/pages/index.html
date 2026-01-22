@@ -131,6 +131,10 @@
 
                 <div class="header-right">
                     <div class="stats-bar">
+                        <div class="stat-item" id="limit-indicator" title="Browser Limit">
+                            <span class="stat-label">Limit</span>
+                            <span class="stat-value" id="stat-limit">∞</span>
+                        </div>
                         <div class="stat-item">
                             <span class="stat-label">Nodes</span>
                             <span class="stat-value" id="stat-nodes">0</span>
@@ -232,7 +236,8 @@
                         </div>
                         <input type="text" id="profile-id" class="input hidden" placeholder="Profile ID"
                             style="width: 120px;">
-                        <input type="number" id="batch-count" class="input-number" value="1" min="1" max="100">
+                        <input type="number" id="batch-count" class="input-number" value="1" min="1" max="100000"
+                            title="Number of browsers to spawn">
                         <button id="spawn-btn" onclick="app.requestNewBrowser()" class="btn btn-primary">
                             <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -301,16 +306,58 @@
             if (e.key === 'Enter') app.modalNavGo();
         });
 
-        // Check Admin Status
+        // Check Admin Status and fetch user limits
         async function checkAdmin() {
             try {
                 const res = await fetch('/auth/me');
                 const data = await res.json();
+                window.userData = data; // Store globally for app.js
+
                 if (data.is_admin) {
                     document.querySelectorAll('.admin-only').forEach(el => el.classList.remove('hidden'));
                 }
+
+                // Update browser limit display
+                updateLimitDisplay(data);
             } catch (e) { }
         }
+
+        function updateLimitDisplay(data) {
+            const limitEl = document.getElementById('stat-limit');
+            const limitIndicator = document.getElementById('limit-indicator');
+
+            if (!limitEl || !data) return;
+
+            if (data.browser_limit === -1) {
+                limitEl.textContent = '∞';
+                limitEl.title = 'Unlimited browsers';
+                limitIndicator?.classList.remove('warning', 'danger');
+            } else {
+                const available = data.browsers_available || 0;
+                const limit = data.browser_limit || 10;
+                limitEl.textContent = `${available}/${limit}`;
+                limitEl.title = `${available} browsers remaining of ${limit} limit`;
+
+                // Color code based on usage
+                const usagePercent = ((limit - available) / limit) * 100;
+                limitIndicator?.classList.remove('warning', 'danger');
+                if (usagePercent >= 90) {
+                    limitIndicator?.classList.add('danger');
+                } else if (usagePercent >= 70) {
+                    limitIndicator?.classList.add('warning');
+                }
+            }
+        }
+
+        // Refresh limit display periodically
+        setInterval(async () => {
+            try {
+                const res = await fetch('/auth/me');
+                const data = await res.json();
+                updateLimitDisplay(data);
+            } catch (e) { }
+        }, 10000);
+
         document.addEventListener('DOMContentLoaded', checkAdmin);
     </script>
 </body>

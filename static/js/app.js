@@ -647,7 +647,7 @@ class StealthNodeApp {
         this.selectedKeys.forEach(k => {
             if (type === 'close') {
                 const inst = this.instances.find(i => i.key === k);
-                if (inst) fetch(`${inst.url}/close/${inst.bid}`, { method: 'POST' });
+                if (inst) fetch(`/api/close_browser/${inst.nid}/${inst.bid}`, { method: 'POST' });
             } else if (type === 'back' || type === 'forward' || type === 'refresh') {
                 this.sendMsg(k, { type });
             }
@@ -672,13 +672,13 @@ class StealthNodeApp {
         }
     }
 
-    // Request new browser(s)
+    // Request new browser(s) - Optimized for scale
     async requestNewBrowser() {
         const btn = document.getElementById('spawn-btn');
         const countInput = document.getElementById('batch-count');
         const profileInput = document.getElementById('profile-id');
 
-        const count = countInput?.value || 1;
+        const count = parseInt(countInput?.value) || 1;
         const profileId = profileInput?.value || '';
 
         if (btn) {
@@ -688,33 +688,53 @@ class StealthNodeApp {
                     <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" opacity="0.25"></circle>
                     <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                 </svg>
-                Spawning ${count}...
+                ${count > 50 ? 'Processing...' : `Spawning ${count}...`}
             `;
         }
 
-        // Show skeleton loading for expected new instances
-        this.showSkeletonLoading(parseInt(count));
+        // Show skeleton loading for expected new instances (max 20 to avoid UI overload)
+        const skeletonCount = Math.min(count, 20);
+        this.showSkeletonLoading(skeletonCount);
 
         try {
             let url = `/api/request_browser?count=${count}&mode=${this.spawnMode}`;
             if (profileId) url += `&profile_id=${encodeURIComponent(profileId)}`;
 
             const res = await fetch(url);
+
+            if (!res.ok) {
+                const error = await res.json();
+                this.showToast(error.detail || 'Failed to spawn browsers', 'error');
+                return;
+            }
+
             const data = await res.json();
 
-            this.showToast(`Spawned ${data.count} browser(s)`, 'success');
+            // Build detailed feedback message
+            let message = `Spawned ${data.count} browser(s)`;
+            if (data.failed > 0) {
+                message += ` (${data.failed} failed)`;
+            }
+            if (data.remaining_limit !== -1 && data.remaining_limit !== undefined) {
+                message += ` • ${data.remaining_limit} remaining`;
+            }
+
+            const toastType = data.count === data.requested ? 'success' :
+                data.count > 0 ? 'info' : 'error';
+            this.showToast(message, toastType);
+
         } catch (e) {
             this.showToast(`Failed to spawn: ${e.message}`, 'error');
-        }
-
-        if (btn) {
-            btn.disabled = false;
-            btn.innerHTML = `
-                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
-                </svg>
-                Spawn
-            `;
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = `
+                    <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                    </svg>
+                    Spawn
+                `;
+            }
         }
     }
 

@@ -70,7 +70,7 @@ class FingerprintManager:
 
 class Config:
     NODE_ID = os.getenv("NODE_ID", f"node-{str(uuid.uuid4())[:6]}")
-    SERVER_URL = os.getenv("SERVER_URL", "https://server-latest-p0vo.onrender.com")
+    SERVER_URL = os.getenv("SERVER_URL", "http://localhost:7860")
     NODE_HOST = os.getenv("NODE_HOST", "localhost")
     NODE_PORT = int(os.getenv("NODE_PORT", 8002))
     HEADLESS = os.getenv("HEADLESS", "true").lower() == "true"
@@ -372,9 +372,10 @@ class BrowserVideoTrack(MediaStreamTrack):
         except: pass
 
 class BrowserInstance:
-    def __init__(self, bid: str, mode: str = "ephemeral", profile_id: Optional[str] = None):
+    def __init__(self, bid: str, mode: str = "ephemeral", profile_id: Optional[str] = None, owner: str = "system"):
         self.id = bid
         self.mode = mode
+        self.owner = owner
         self.profile_id = profile_id or f"prof_{bid}"
         self.fingerprint = FingerprintManager.generate()
         
@@ -825,44 +826,71 @@ async def command_loop():
             logger.info(f"Connecting to command channel: {ws_url}")
             
             async with httpx.AsyncClient() as client:
-                # Use a websocket library or handle it via a task
-                # Since we are already using FastAPI/Uvicorn, we can use websockets library
                 import websockets
-                async with websockets.connect(ws_url) as ws:
+                async with websockets.connect(
+                    ws_url, 
+                    ping_interval=20, 
+                    ping_timeout=20,
+                    close_timeout=10,
+                    max_size=None 
+                ) as ws:
                     logger.info("Command channel connected")
+                    ws_lock = asyncio.Lock()
+                    
+                    async def handle_message(msg):
+                        try:
+                            data = json.loads(msg)
+                            task_id = data.get("task_id")
+                            command = data.get("command")
+                            payload = data.get("data", {})
+                            
+                            logger.info(f"Processing Task [{command}]: {task_id}")
+                            result = None
+                            
+                            try:
+                                if command == "create":
+                                    result = await create_browser_internal(
+                                        payload.get("mode", "ephemeral"), 
+                                        payload.get("profile_id"),
+                                        payload.get("owner", "system")
+                                    )
+                                elif command == "get_profiles":
+                                    result = await list_profiles()
+                                elif command == "delete_profile":
+                                    result = await delete_profile(payload.get("profile_id"))
+                                elif command == "refresh":
+                                    result = await node_refresh()
+                                elif command == "close_browser":
+                                    bid = payload.get("browser_id")
+                                    if bid in browsers:
+                                        await browsers[bid].close()
+                                        result = {"status": "ok"}
+                                    else:
+                                        result = {"status": "error", "message": "Browser not found"}
+                            except Exception as te:
+                                logger.error(f"Task Execution Error: {te}")
+                                result = {"status": "error", "message": str(te)}
+                            
+                            async with ws_lock:
+                                await ws.send(json.dumps({
+                                    "task_id": task_id,
+                                    "result": result
+                                }))
+                        except Exception as e:
+                            logger.error(f"Message handling error: {e}")
+
                     while True:
                         msg = await ws.recv()
-                        data = json.loads(msg)
+                        # Process each command in a detached task for concurrency
+                        asyncio.create_task(handle_message(msg))
                         
-                        task_id = data.get("task_id")
-                        command = data.get("command")
-                        payload = data.get("data", {})
-                        
-                        logger.info(f"Received Task [{command}]: {task_id}")
-                        result = None
-                        
-                        try:
-                            if command == "create":
-                                result = await create_browser_internal(payload.get("mode", "ephemeral"), payload.get("profile_id"))
-                            elif command == "get_profiles":
-                                result = await list_profiles()
-                            elif command == "delete_profile":
-                                result = await delete_profile(payload.get("profile_id"))
-                            elif command == "refresh":
-                                result = await node_refresh()
-                            
-                            await ws.send(json.dumps({
-                                "task_id": task_id,
-                                "result": result
-                            }))
-                        except Exception as te:
-                            logger.error(f"Task Execution Error: {te}")
         except Exception as e:
             logger.error(f"Command channel error: {e}")
             await asyncio.sleep(5)
 
-async def create_browser_internal(mode: str = "ephemeral", profile_id: str = None):
+async def create_browser_internal(mode: str = "ephemeral", profile_id: str = None, owner: str = "system"):
     """Helper for internal/websocket creation logic"""
+    # Check limit before starting
     if len(browsers) >= Config.MAX_BROWSERS:
         return {"status": "error", "message": "Max browsers reached"}
 
@@ -879,36 +907,56 @@ async def create_browser_internal(mode: str = "ephemeral", profile_id: str = Non
                 if idle_profiles: profile_id = idle_profiles[0]
 
     bid = str(uuid.uuid4())[:8]
-    instance = BrowserInstance(bid, mode=mode, profile_id=profile_id)
-    await instance.launch()
+    instance = BrowserInstance(bid, mode=mode, profile_id=profile_id, owner=owner)
+    
+    # Reserve slot immediately to prevent race conditions in concurrent launches
     browsers[bid] = instance
-    return {"id": bid, "mode": mode, "profile_id": instance.profile_id}
+    
+    try:
+        await instance.launch()
+        return {"id": bid, "mode": mode, "profile_id": instance.profile_id, "owner": owner}
+    except Exception as e:
+        # Rollback if launch fails
+        if bid in browsers: del browsers[bid]
+        raise e
+
+# State tracking for delta updates
+last_browser_ids = set()
 
 async def heartbeat_loop():
-    global node_status, node_error
+    global node_status, node_error, last_browser_ids
     node_url = f"http://{Config.NODE_HOST}:{Config.NODE_PORT}"
+    
     while True:
         try:
-            async with httpx.AsyncClient(timeout=2.0) as client:
-                browser_data = [
-                    {"id": b.id, "mode": b.mode, "profile_id": b.profile_id}
+            current_browser_ids = set(browsers.keys())
+            
+            # Optimization: Only send full browser list if IDs changed
+            should_send_list = (current_browser_ids != last_browser_ids)
+            
+            payload = {
+                "node_id": Config.NODE_ID,
+                "url": node_url,
+                "browsers_count": len(browsers),
+                "status": node_status,
+                "error": node_error
+            }
+            
+            if should_send_list:
+                payload["browsers"] = [
+                    {"id": b.id, "mode": b.mode, "profile_id": b.profile_id, "owner": b.owner}
                     for b in browsers.values()
                 ]
-                await client.post(
-                    f"{Config.SERVER_URL}/register",
-                    json={
-                        "node_id": Config.NODE_ID,
-                        "url": node_url,
-                        "browsers_count": len(browsers),
-                        "browsers": browser_data,
-                        "status": node_status,
-                        "error": node_error
-                    }
-                )
+                last_browser_ids = current_browser_ids
+
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(f"{Config.SERVER_URL}/register", json=payload)
+                
         except Exception as e:
             logger.error(f"Heartbeat failed: {e}")
             node_status = "error"
             node_error = str(e)
+            
         await asyncio.sleep(Config.HEARTBEAT_INTERVAL)
 
 @app.post("/create")
@@ -1039,8 +1087,9 @@ async def webrtc_offer(bid: str, request: Request):
         async def on_state():
             logger.info(f"PC State {bid}: {pc.connectionState}")
             if pc.connectionState in ["failed", "closed"]:
-                if pc in browsers[bid].pcs: browsers[bid].pcs.remove(pc)
-                if track in browsers[bid].tracks: browsers[bid].tracks.remove(track)
+                if bid in browsers:
+                    if pc in browsers[bid].pcs: browsers[bid].pcs.remove(pc)
+                    if track in browsers[bid].tracks: browsers[bid].tracks.remove(track)
 
         await pc.setRemoteDescription(offer)
         answer = await pc.createAnswer()
@@ -1049,8 +1098,15 @@ async def webrtc_offer(bid: str, request: Request):
         return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
     except Exception as e:
         logger.error(f"WebRTC Handshake Failed: {e}")
-        # Cleanup
-        if pc in browsers[bid].pcs: browsers[bid].pcs.remove(pc)
+        # Safer Cleanup
+        try:
+            if bid in browsers:
+                if pc in browsers[bid].pcs:
+                    browsers[bid].pcs.remove(pc)
+                if 'track' in locals() and track in browsers[bid].tracks:
+                    browsers[bid].tracks.remove(track)
+        except:
+            pass
         return {"error": str(e)}
 
 @app.websocket("/ws/{bid}")

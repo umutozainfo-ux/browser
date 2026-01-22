@@ -19,8 +19,8 @@ from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
 # ======================================================================
 
 DB_PATH = "hub_data.db"
-# Use pbkdf2_sha256 for better compatibility on cloud platforms
-pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+# Use pbkdf2_sha256 for better compatibility on cloud platforms, keep bcrypt for legacy识别
+pwd_context = CryptContext(schemes=["pbkdf2_sha256", "bcrypt"], deprecated="auto")
 app = FastAPI(title="StealthNode Hub")
 
 # Database initialization
@@ -32,19 +32,39 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
-            is_admin INTEGER DEFAULT 0
+            is_admin INTEGER DEFAULT 0,
+            browser_limit INTEGER DEFAULT 10
         )
     """)
-    # Create default admin if no users exist
-    cursor.execute("SELECT COUNT(*) FROM users")
-    if cursor.fetchone()[0] == 0:
-        admin_pass = "joemake"
-        cursor.execute("INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)",
-                       ("admin", pwd_context.hash(admin_pass), 1))
+    
+    # Add browser_limit column if it doesn't exist (migration for existing DBs)
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN browser_limit INTEGER DEFAULT 10")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    
+    # Create default admin if no users exist or if hash is unreadable
+    admin_pass = "joemake"
+    cursor.execute("SELECT password_hash FROM users WHERE username = 'admin'")
+    row = cursor.fetchone()
+    
+    if not row:
+        cursor.execute("INSERT INTO users (username, password_hash, is_admin, browser_limit) VALUES (?, ?, ?, ?)",
+                       ("admin", pwd_context.hash(admin_pass), 1, -1))  # -1 = unlimited
+    else:
+        # Self-heal: If the existing hash format is unknown (e.g. after switching algorithms), reset it
+        try:
+            pwd_context.identify(row[0])
+        except:
+            cursor.execute("UPDATE users SET password_hash = ? WHERE username = 'admin'",
+                           (pwd_context.hash(admin_pass),))
+    
     conn.commit()
     conn.close()
 
-init_db()
+@app.on_event("startup")
+def on_startup():
+    init_db()
 
 # Session storage (In-memory for simplicity, or could be in DB)
 # session_id: username
@@ -54,10 +74,12 @@ class UserCreate(BaseModel):
     username: str
     password: str
     is_admin: bool = False
+    browser_limit: int = 10  # Default limit of 10 browsers per user
 
 class UserUpdate(BaseModel):
     password: Optional[str] = None
     is_admin: Optional[bool] = None
+    browser_limit: Optional[int] = None
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -90,12 +112,12 @@ class NodeInfo(BaseModel):
     node_id: str
     url: str
     browsers_count: int
-    browsers: List[Any]  # Can be IDs or complex objects
+    browsers: Optional[List[Any]] = None  # Delta: Only send when list changes
     status: str = "healthy"
     error: Optional[str] = None
 
-# Real-time dashboard clients
-hub_clients: List[WebSocket] = []
+# Real-time dashboard clients: { websocket: user_dict }
+hub_clients: Dict[WebSocket, Dict[str, Any]] = {}
 
 # Node Command System
 # { node_id: WebSocket }
@@ -122,17 +144,55 @@ async def get_admin_user(current_user: sqlite3.Row = Depends(get_current_user)):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return current_user
 
+# Scaling Control
+last_broadcast_time = 0
+BROADCAST_THROTTLE = 2.0 # Broadcast at most every 2 seconds to save CPU
+
 async def broadcast_hub():
-    """Prune offline nodes and broadcast state"""
+    """Prune offline nodes and broadcast SLIM summary (Scales to 100k+)"""
+    global last_broadcast_time
     now = time.time()
-    pruned_nodes = {nid: data for nid, data in nodes.items() if now - data["last_seen"] < NODE_TIMEOUT}
     
-    msg = {"type": "update", "nodes": pruned_nodes}
-    for client in list(hub_clients):
+    # Prune offline nodes from the global dict
+    to_prune = [nid for nid, data in nodes.items() if now - data["last_seen"] > NODE_TIMEOUT]
+    for nid in to_prune:
+        nodes.pop(nid, None)
+    
+    if now - last_broadcast_time < BROADCAST_THROTTLE:
+        return
+    last_broadcast_time = now
+
+    if not hub_clients:
+        return
+
+    for client, user in list(hub_clients.items()):
+        # Filter nodes/browsers for this specific user
+        filtered_nodes = {}
+        for nid, data in nodes.items():
+            if now - data["last_seen"] > NODE_TIMEOUT: continue
+            
+            # Strict Isolation: Only show and allow control of browsers owned by this user
+            raw_browsers = data.get("browsers", [])
+            filtered_browsers = [b for b in raw_browsers if isinstance(b, dict) and b.get("owner") == user["username"]]
+            
+            filtered_nodes[nid] = {
+                "browsers_count": len(filtered_browsers),
+                "browsers": filtered_browsers, 
+                "status": data["status"],
+                "last_seen": data["last_seen"]
+            }
+
+        summary = {
+            "type": "update",
+            "nodes": filtered_nodes,
+            "total_browsers": sum(n["browsers_count"] for n in filtered_nodes.values()),
+            "total_nodes": len(filtered_nodes)
+        }
+        
         try: 
-            await client.send_json(msg)
+            await client.send_json(summary)
         except: 
-            hub_clients.remove(client)
+            hub_clients.pop(client, None)
 
 # ======================================================================
 # API ENDPOINTS
@@ -140,49 +200,64 @@ async def broadcast_hub():
 
 @app.post("/register")
 async def register_node(info: NodeInfo):
-    """Nodes call this to announce presence"""
+    """Nodes call this to announce presence. Optimized for high scale."""
     old_data = nodes.get(info.node_id)
-    new_browsers = info.browsers
     
-    # Check if anything changed besides the heartbeat timestamp
+    # Delta Logic: If node didn't send browsers, use the old ones
+    new_browsers = info.browsers
+    if new_browsers is None and old_data:
+        new_browsers = old_data.get("browsers", [])
+    
+    # Check if a broadcast is actually needed
     changed = False
     if not old_data:
         changed = True
-    elif (old_data.get("browsers") != new_browsers or 
-          old_data.get("url") != info.url or 
-          old_data.get("status") != info.status or
-          old_data.get("error") != info.error):
+    elif (new_browsers != old_data.get("browsers") or 
+          info.status != old_data.get("status") or
+          info.browsers_count != old_data.get("browsers_count")):
         changed = True
         
     nodes[info.node_id] = {
         "url": info.url,
         "browsers_count": info.browsers_count,
-        "browsers": new_browsers,
+        "browsers": new_browsers or [],
         "status": info.status,
         "error": info.error,
         "last_seen": time.time()
     }
     
     if changed:
-        print(f" [HUB] Node Registered: {info.node_id} at {info.url} ({info.browsers_count} browsers)")
         asyncio.create_task(broadcast_hub())
     return {"status": "ok"}
 
 @app.websocket("/ws/hub")
-async def hub_endpoint(websocket: WebSocket):
+async def hub_endpoint(websocket: WebSocket, session_id: Optional[str] = Cookie(None)):
+    if not session_id or session_id not in active_sessions:
+        await websocket.close()
+        return
+        
+    username = active_sessions[session_id]
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    user_row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    conn.close()
+    
+    if not user_row:
+        await websocket.close()
+        return
+
+    user_info = {"username": username, "is_admin": bool(user_row["is_admin"])}
     await websocket.accept()
-    hub_clients.append(websocket)
-    # Send immediate state
-    now = time.time()
-    active = {nid: data for nid, data in nodes.items() if now - data["last_seen"] < NODE_TIMEOUT}
-    await websocket.send_json({"type": "update", "nodes": active})
+    hub_clients[websocket] = user_info
+    
+    # Send immediate filtered state
+    asyncio.create_task(broadcast_hub())
     
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        if websocket in hub_clients: 
-            hub_clients.remove(websocket)
+        hub_clients.pop(websocket, None)
 
 @app.get("/api/profiles")
 async def get_all_profiles(current_user: sqlite3.Row = Depends(get_current_user)):
@@ -256,7 +331,14 @@ async def delete_remote_profile(node_id: str, profile_id: str, current_user: sql
     if node_id not in nodes:
         raise HTTPException(status_code=404, detail="Node not found")
     
-    result = await send_node_command(node_id, "delete_profile", {"profile_id": profile_id})
+    # We should ideally check if the user owns this profile or is an admin
+    # For now, we trust the send_node_command will handle it or we check node data
+    
+    result = await send_node_command(node_id, "delete_profile", {
+        "profile_id": profile_id,
+        "owner": current_user["username"],
+        "is_admin": bool(current_user["is_admin"])
+    })
     if result: return result
     
     # Fallback to legacy HTTP
@@ -275,55 +357,188 @@ async def refresh_node(node_id: str, current_user: sqlite3.Row = Depends(get_cur
     if result: return result
 
     node_url = nodes[node_id]["url"]
-    async with httpx.AsyncClient(timeout=5.0) as client:
-        try:
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.post(f"{node_url}/refresh")
             return resp.json()
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/close_browser/{node_id}/{browser_id}")
+async def close_node_browser(node_id: str, browser_id: str, current_user: sqlite3.Row = Depends(get_current_user)):
+    if node_id not in nodes:
+        raise HTTPException(status_code=404, detail="Node not found")
+    
+    # Check ownership unless admin
+    node_data = nodes[node_id]
+    browsers_list = node_data.get("browsers", [])
+    
+    # Find the browser in the node's list
+    browser = None
+    for b in browsers_list:
+        if isinstance(b, dict) and b.get("id") == browser_id:
+            browser = b
+            break
+        elif b == browser_id:
+            # Legacy case: fallback to old list format if needed
+            browser = {"id": b, "owner": "system"}
+            break
+
+    if not browser:
+        raise HTTPException(status_code=404, detail="Browser not found on this node")
+    
+    if browser.get("owner") != current_user["username"]:
+        raise HTTPException(status_code=403, detail="Unauthorized: You do not own this browser")
+
+    result = await send_node_command(node_id, "close_browser", {"browser_id": browser_id})
+    if result: return result
+    
+    # Fallback to direct HTTP
+    node_url = nodes[node_id]["url"]
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.post(f"{node_url}/close/{browser_id}")
+        return resp.json()
+
+# ======================================================================
+# BROWSER REQUEST SYSTEM - OPTIMIZED FOR SCALE
+# ======================================================================
+
+BATCH_SIZE = 50  # Process browsers in batches of 50 for optimal speed
+
+async def create_browser_on_node(node_id: str, mode: str, profile_id: str, owner: str):
+    """Helper to create a single browser on a node - returns result or None"""
+    # Try WebSocket Command first (Works through firewall/cloud)
+    cmd_result = await send_node_command(node_id, "create", {
+        "mode": mode, 
+        "profile_id": profile_id,
+        "owner": owner
+    })
+    if cmd_result:
+        return cmd_result
+
+    # Legacy HTTP Fallback (Only works if server can see node IP)
+    if node_id in nodes:
+        node_url = nodes[node_id]["url"]
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                payload = {"mode": mode, "profile_id": profile_id, "owner": owner}
+                resp = await client.post(f"{node_url}/create", json=payload)
+                if resp.status_code == 200:
+                    return resp.json()
+        except Exception as e: 
+            print(f"Failed to create browser on {node_id}: {e}")
+    return None
+
+def get_user_browser_count(username: str) -> int:
+    """Count browsers currently owned by a user across all nodes"""
+    count = 0
+    for node_data in nodes.values():
+        for browser in node_data.get("browsers", []):
+            if isinstance(browser, dict) and browser.get("owner") == username:
+                count += 1
+    return count
 
 @app.get("/api/request_browser")
 async def request_browser(count: int = 1, mode: str = "ephemeral", profile_id: str = None, current_user: sqlite3.Row = Depends(get_current_user)):
-    """Allocates multiple browsers across the cluster"""
-    if count < 1 or count > 100: 
+    """
+    Allocates multiple browsers across the cluster with optimized parallel processing.
+    Supports massive scale (100k+) through batched concurrent requests.
+    Enforces per-user browser limits.
+    """
+    username = current_user["username"]
+    browser_limit = current_user["browser_limit"] if "browser_limit" in current_user.keys() else 10
+    is_admin = bool(current_user["is_admin"])
+    
+    # Enforce browser limit (admins with -1 have unlimited)
+    if browser_limit != -1 and not is_admin:
+        current_count = get_user_browser_count(username)
+        available = max(0, browser_limit - current_count)
+        if available == 0:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Browser limit reached. You have {current_count}/{browser_limit} browsers. Close some to request more."
+            )
+        count = min(count, available)
+    
+    # Validate count (allow larger batches for scaled operations)
+    if count < 1:
         count = 1
+    elif count > 100000:
+        count = 100000  # Hard cap at 100k per request
+    
+    now = time.time()
+    active_node_ids = [nid for nid, data in nodes.items() if now - data["last_seen"] < NODE_TIMEOUT]
+    
+    if not active_node_ids:
+        raise HTTPException(status_code=503, detail="No active nodes available")
     
     results = []
-    for _ in range(count):
-        now = time.time()
-        active_node_ids = [nid for nid, data in nodes.items() if now - data["last_seen"] < NODE_TIMEOUT]
+    failed = 0
+    
+    # Process in batches for optimal performance
+    for batch_start in range(0, count, BATCH_SIZE):
+        batch_count = min(BATCH_SIZE, count - batch_start)
         
-        if not active_node_ids:
-            break
+        # Create tasks for concurrent execution
+        tasks = []
+        for i in range(batch_count):
+            # Round-robin with load balancing
+            sorted_nodes = sorted(active_node_ids, key=lambda nid: nodes[nid]["browsers_count"] + len([t for t in tasks if t[1] == nid]))
+            best_node = sorted_nodes[0]
+            
+            task = asyncio.create_task(
+                create_browser_on_node(best_node, mode, profile_id, username)
+            )
+            tasks.append((task, best_node))
         
-        # Smart load balancing - pick node with fewest browsers
-        best_node_id = min(active_node_ids, key=lambda nid: nodes[nid]["browsers_count"])
+        # Wait for all tasks in this batch to complete
+        batch_results = await asyncio.gather(*[t[0] for t in tasks], return_exceptions=True)
         
-        # Try WebSocket Command first (Works through firewall/cloud)
-        cmd_result = await send_node_command(best_node_id, "create", {"mode": mode, "profile_id": profile_id})
-        if cmd_result:
-            results.append(cmd_result)
-            continue
-
-        # Legacy HTTP Fallback (Only works if server can see node IP)
-        node_url = nodes[best_node_id]["url"]
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                payload = {"mode": mode, "profile_id": profile_id}
-                resp = await client.post(f"{node_url}/create", json=payload)
-                if resp.status_code == 200:
-                    results.append(resp.json())
-        except Exception as e: 
-            print(f"Failed to create browser on {best_node_id}: {e}")
-            continue
-        
-    return {"results": results, "count": len(results)}
+        for (task, node_id), result in zip(tasks, batch_results):
+            if isinstance(result, Exception):
+                failed += 1
+            elif isinstance(result, dict) and "id" in result:
+                results.append(result)
+                # Optimistic Real-time Update
+                if node_id in nodes:
+                    if "browsers" not in nodes[node_id]: nodes[node_id]["browsers"] = []
+                    nodes[node_id]["browsers"].append(result)
+                    nodes[node_id]["browsers_count"] = len(nodes[node_id]["browsers"])
+            else:
+                failed += 1
+    
+    # Trigger immediate broadcast so browsers appear instantly in UI
+    asyncio.create_task(broadcast_hub())
+    
+    return {
+        "results": results, 
+        "count": len(results),
+        "requested": count,
+        "failed": failed,
+        "remaining_limit": browser_limit - get_user_browser_count(username) if browser_limit != -1 else -1
+    }
 
 @app.get("/api/nodes")
 async def get_nodes(current_user: sqlite3.Row = Depends(get_current_user)):
-    """Get current node status"""
+    """Get current node status filtered for the user"""
     now = time.time()
-    active_nodes = {nid: data for nid, data in nodes.items() if now - data["last_seen"] < NODE_TIMEOUT}
+    active_nodes = {}
+    for nid, data in nodes.items():
+        if now - data["last_seen"] > NODE_TIMEOUT:
+            continue
+
+        # Filter browsers for this user
+        raw_browsers = data.get("browsers", [])
+        filtered_browsers = [b for b in raw_browsers if isinstance(b, dict) and b.get("owner") == current_user["username"]]
+
+        active_nodes[nid] = {
+            "url": data["url"],
+            "browsers_count": len(filtered_browsers),
+            "browsers": filtered_browsers,
+            "status": data["status"],
+            "last_seen": data["last_seen"]
+        }
+
     return {"nodes": active_nodes, "count": len(active_nodes)}
 
 # ======================================================================
@@ -362,9 +577,14 @@ async def logout(response: Response, session_id: Optional[str] = Cookie(None)):
 
 @app.get("/auth/me")
 async def get_me(current_user: sqlite3.Row = Depends(get_current_user)):
+    browser_limit = current_user["browser_limit"] if "browser_limit" in current_user.keys() else 10
+    current_count = get_user_browser_count(current_user["username"])
     return {
         "username": current_user["username"],
-        "is_admin": bool(current_user["is_admin"])
+        "is_admin": bool(current_user["is_admin"]),
+        "browser_limit": browser_limit,
+        "browsers_active": current_count,
+        "browsers_available": browser_limit - current_count if browser_limit != -1 else -1
     }
 
 # ======================================================================
@@ -375,21 +595,64 @@ async def get_me(current_user: sqlite3.Row = Depends(get_current_user)):
 async def list_users(admin: sqlite3.Row = Depends(get_admin_user)):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    users = conn.execute("SELECT id, username, is_admin FROM users").fetchall()
+    users = conn.execute("SELECT id, username, is_admin, browser_limit FROM users").fetchall()
     conn.close()
-    return [dict(u) for u in users]
+    
+    # Add current browser count for each user
+    result = []
+    for u in users:
+        user_dict = dict(u)
+        user_dict["browsers_active"] = get_user_browser_count(u["username"])
+        result.append(user_dict)
+    return result
 
 @app.post("/api/users")
 async def create_user(user: UserCreate, admin: sqlite3.Row = Depends(get_admin_user)):
     conn = sqlite3.connect(DB_PATH)
     try:
-        conn.execute("INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)",
-                     (user.username, pwd_context.hash(user.password), 1 if user.is_admin else 0))
+        conn.execute(
+            "INSERT INTO users (username, password_hash, is_admin, browser_limit) VALUES (?, ?, ?, ?)",
+            (user.username, pwd_context.hash(user.password), 1 if user.is_admin else 0, user.browser_limit)
+        )
         conn.commit()
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=400, detail="Username already exists")
     finally:
         conn.close()
+    return {"status": "ok"}
+
+@app.put("/api/users/{user_id}")
+async def update_user(user_id: int, user: UserUpdate, admin: sqlite3.Row = Depends(get_admin_user)):
+    """Update a user's properties (password, admin status, browser limit)"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    
+    existing = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not existing:
+        conn.close()
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    updates = []
+    params = []
+    
+    if user.password is not None:
+        updates.append("password_hash = ?")
+        params.append(pwd_context.hash(user.password))
+    
+    if user.is_admin is not None:
+        updates.append("is_admin = ?")
+        params.append(1 if user.is_admin else 0)
+    
+    if user.browser_limit is not None:
+        updates.append("browser_limit = ?")
+        params.append(user.browser_limit)
+    
+    if updates:
+        params.append(user_id)
+        conn.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = ?", params)
+        conn.commit()
+    
+    conn.close()
     return {"status": "ok"}
 
 @app.delete("/api/users/{user_id}")
@@ -398,8 +661,9 @@ async def delete_user(user_id: int, admin: sqlite3.Row = Depends(get_admin_user)
         raise HTTPException(status_code=400, detail="Cannot delete yourself")
     
     conn = sqlite3.connect(DB_PATH)
-    conn.execute("SELECT id FROM users WHERE id = ?", (user_id,))
-    if not conn.fetchone:
+    conn.row_factory = sqlite3.Row
+    existing = conn.execute("SELECT id FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not existing:
          conn.close()
          raise HTTPException(status_code=404, detail="User not found")
          

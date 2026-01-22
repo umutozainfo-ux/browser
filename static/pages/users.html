@@ -12,7 +12,7 @@
     <style>
         .user-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
             gap: var(--space-xl);
             margin-top: var(--space-xl);
         }
@@ -22,9 +22,6 @@
             border: 1px solid var(--color-border);
             border-radius: var(--radius-xl);
             padding: var(--space-lg);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
             transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
 
@@ -32,6 +29,13 @@
             border-color: var(--color-accent);
             transform: translateY(-4px);
             box-shadow: 0 12px 24px -10px rgba(99, 102, 241, 0.3);
+        }
+
+        .user-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: var(--space-md);
         }
 
         .user-info {
@@ -73,32 +77,148 @@
             text-transform: uppercase;
         }
 
+        .user-card-stats {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: var(--space-sm);
+            padding: var(--space-md) 0;
+            border-top: 1px solid var(--color-border);
+            border-bottom: 1px solid var(--color-border);
+            margin: var(--space-md) 0;
+        }
+
+        .stat-box {
+            text-align: center;
+            padding: var(--space-sm);
+            background: var(--color-bg-elevated);
+            border-radius: var(--radius-md);
+        }
+
+        .stat-box-value {
+            font-size: 1.3rem;
+            font-weight: 700;
+            color: var(--color-accent);
+        }
+
+        .stat-box-label {
+            font-size: 0.7rem;
+            color: var(--color-text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-box.warning .stat-box-value {
+            color: var(--color-warning);
+        }
+
+        .stat-box.danger .stat-box-value {
+            color: var(--color-danger);
+        }
+
+        .user-card-actions {
+            display: flex;
+            gap: var(--space-sm);
+            justify-content: flex-end;
+        }
+
         .create-form {
             background: var(--color-bg-card);
             border: 1px solid var(--color-border);
             border-radius: var(--radius-xl);
             padding: var(--space-xl);
-            max-width: 500px;
+            max-width: 600px;
             margin-bottom: var(--space-2xl);
         }
 
         .form-row {
-            display: flex;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
             gap: var(--space-md);
             margin-bottom: var(--space-lg);
         }
 
         .form-group {
-            flex: 1;
+            display: flex;
+            flex-direction: column;
         }
 
-        .btn-delete {
-            opacity: 0;
-            transition: opacity 0.2s;
+        .form-group label {
+            font-size: 0.85rem;
+            font-weight: 500;
+            margin-bottom: var(--space-xs);
+            color: var(--color-text-muted);
         }
 
-        .user-card:hover .btn-delete {
-            opacity: 1;
+        .limit-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 10px;
+            border-radius: var(--radius-md);
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        .limit-badge.unlimited {
+            background: rgba(34, 197, 94, 0.15);
+            color: #22c55e;
+        }
+
+        .limit-badge.limited {
+            background: rgba(251, 191, 36, 0.15);
+            color: #fbbf24;
+        }
+
+        /* Edit Modal Styles */
+        .edit-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(8px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .edit-modal.active {
+            display: flex;
+        }
+
+        .edit-modal-content {
+            background: var(--color-bg-card);
+            border: 1px solid var(--color-border);
+            border-radius: var(--radius-xl);
+            padding: var(--space-xl);
+            width: 100%;
+            max-width: 450px;
+            animation: modalIn 0.2s ease;
+        }
+
+        @keyframes modalIn {
+            from {
+                opacity: 0;
+                transform: scale(0.95) translateY(-20px);
+            }
+
+            to {
+                opacity: 1;
+                transform: scale(1) translateY(0);
+            }
+        }
+
+        .edit-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: var(--space-lg);
+        }
+
+        .edit-modal-header h3 {
+            margin: 0;
         }
     </style>
 </head>
@@ -111,7 +231,8 @@
                 <div class="sidebar-brand">
                     <div class="sidebar-brand-icon">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
                         </svg>
                     </div>
                     <div class="sidebar-brand-text">
@@ -126,25 +247,29 @@
                     <div class="nav-section-title">Main</div>
                     <a href="/" class="nav-item">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                         </svg>
                         <span>Command Center</span>
                     </a>
                     <a href="/vault" class="nav-item">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9l-2-2H5a2 2 0 01-2 2v10a2 2 0 012 2z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9l-2-2H5a2 2 0 01-2 2v10a2 2 0 012 2z" />
                         </svg>
                         <span>Profile Vault</span>
                     </a>
                     <a href="/settings" class="nav-item">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
                         </svg>
                         <span>Settings</span>
                     </a>
                     <a href="/admin/users" class="nav-item active admin-only hidden">
                         <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
                         </svg>
                         <span>User Management</span>
                     </a>
@@ -154,7 +279,8 @@
             <div class="sidebar-footer">
                 <a href="/auth/logout" class="nav-item" style="color: var(--color-danger);">
                     <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
                     </svg>
                     <span>Logout</span>
                 </a>
@@ -174,15 +300,28 @@
 
             <div class="page-content">
                 <div class="create-form">
-                    <h3 style="margin-bottom: var(--space-lg);">Add New User</h3>
+                    <h3 style="margin-bottom: var(--space-lg);">
+                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="24" height="24"
+                            style="vertical-align: middle; margin-right: 8px;">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+                        </svg>
+                        Add New User
+                    </h3>
                     <div class="form-row">
                         <div class="form-group">
-                            <label class="form-label">Username</label>
+                            <label>Username</label>
                             <input type="text" id="new-username" class="input" placeholder="Enter username">
                         </div>
                         <div class="form-group">
-                            <label class="form-label">Password</label>
+                            <label>Password</label>
                             <input type="password" id="new-password" class="input" placeholder="Enter password">
+                        </div>
+                        <div class="form-group">
+                            <label>Browser Limit</label>
+                            <input type="number" id="new-browser-limit" class="input" value="10" min="-1"
+                                placeholder="10">
+                            <small style="color: var(--color-text-muted); font-size: 0.7rem;">-1 = Unlimited</small>
                         </div>
                     </div>
                     <div class="flex items-center gap-lg">
@@ -191,11 +330,24 @@
                             <span class="toggle-slider"></span>
                             <span class="toggle-label">Admin Permissions</span>
                         </label>
-                        <button onclick="createUser()" class="btn btn-primary" style="margin-left: auto;">Create User</button>
+                        <button onclick="createUser()" class="btn btn-primary" style="margin-left: auto;">
+                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="18" height="18">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M12 4v16m8-8H4" />
+                            </svg>
+                            Create User
+                        </button>
                     </div>
                 </div>
 
-                <h3 style="margin-bottom: var(--space-lg);">Registered Users</h3>
+                <h3 style="margin-bottom: var(--space-lg);">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="24" height="24"
+                        style="vertical-align: middle; margin-right: 8px;">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                    </svg>
+                    Registered Users
+                </h3>
                 <div id="user-grid" class="user-grid">
                     <!-- Users injected here -->
                 </div>
@@ -203,9 +355,46 @@
         </main>
     </div>
 
+    <!-- Edit User Modal -->
+    <div id="edit-modal" class="edit-modal">
+        <div class="edit-modal-content">
+            <div class="edit-modal-header">
+                <h3>Edit User</h3>
+                <button onclick="closeEditModal()" class="btn btn-icon btn-ghost">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" width="20" height="20">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+            <input type="hidden" id="edit-user-id">
+            <div class="form-group" style="margin-bottom: var(--space-lg);">
+                <label>New Password (leave blank to keep current)</label>
+                <input type="password" id="edit-password" class="input" placeholder="Enter new password">
+            </div>
+            <div class="form-group" style="margin-bottom: var(--space-lg);">
+                <label>Browser Limit (-1 = Unlimited)</label>
+                <input type="number" id="edit-browser-limit" class="input" min="-1">
+            </div>
+            <div class="flex items-center gap-lg" style="margin-bottom: var(--space-lg);">
+                <label class="toggle">
+                    <input type="checkbox" id="edit-is-admin" class="toggle-input">
+                    <span class="toggle-slider"></span>
+                    <span class="toggle-label">Admin Permissions</span>
+                </label>
+            </div>
+            <div class="flex gap-md" style="justify-content: flex-end;">
+                <button onclick="closeEditModal()" class="btn btn-secondary">Cancel</button>
+                <button onclick="saveUserEdit()" class="btn btn-primary">Save Changes</button>
+            </div>
+        </div>
+    </div>
+
     <div id="toast-container" class="toast-container"></div>
 
     <script>
+        let currentUsers = [];
+
         async function fetchUsers() {
             const res = await fetch('/api/users');
             if (res.status === 403) {
@@ -213,32 +402,68 @@
                 return;
             }
             const users = await res.json();
+            currentUsers = users;
             renderUsers(users);
         }
 
         function renderUsers(users) {
             const grid = document.getElementById('user-grid');
             grid.innerHTML = '';
-            
+
             users.forEach(user => {
+                const browserLimit = user.browser_limit ?? 10;
+                const isUnlimited = browserLimit === -1;
+                const browsersActive = user.browsers_active || 0;
+                const usagePercent = isUnlimited ? 0 : (browsersActive / browserLimit) * 100;
+
+                let statClass = '';
+                if (!isUnlimited) {
+                    if (usagePercent >= 90) statClass = 'danger';
+                    else if (usagePercent >= 70) statClass = 'warning';
+                }
+
                 const card = document.createElement('div');
                 card.className = 'user-card';
                 card.innerHTML = `
-                    <div class="user-info">
-                        <div class="user-avatar">${user.username[0].toUpperCase()}</div>
-                        <div class="user-details">
-                            <div class="flex items-center gap-sm">
-                                <h4>${user.username}</h4>
-                                ${user.is_admin ? '<span class="badge-admin">Admin</span>' : ''}
+                    <div class="user-card-header">
+                        <div class="user-info">
+                            <div class="user-avatar">${user.username[0].toUpperCase()}</div>
+                            <div class="user-details">
+                                <div class="flex items-center gap-sm">
+                                    <h4>${user.username}</h4>
+                                    ${user.is_admin ? '<span class="badge-admin">Admin</span>' : ''}
+                                </div>
+                                <p>ID: #${user.id}</p>
                             </div>
-                            <p>ID: #${user.id}</p>
+                        </div>
+                        <span class="limit-badge ${isUnlimited ? 'unlimited' : 'limited'}">
+                            ${isUnlimited ? '∞ Unlimited' : `Limit: ${browserLimit}`}
+                        </span>
+                    </div>
+                    <div class="user-card-stats">
+                        <div class="stat-box ${statClass}">
+                            <div class="stat-box-value">${browsersActive}</div>
+                            <div class="stat-box-label">Active Browsers</div>
+                        </div>
+                        <div class="stat-box">
+                            <div class="stat-box-value">${isUnlimited ? '∞' : (browserLimit - browsersActive)}</div>
+                            <div class="stat-box-label">Available</div>
                         </div>
                     </div>
-                    <button onclick="deleteUser(${user.id})" class="btn btn-icon btn-danger btn-delete" title="Delete User">
-                        <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                        </svg>
-                    </button>
+                    <div class="user-card-actions">
+                        <button onclick="openEditModal(${user.id})" class="btn btn-secondary btn-sm" title="Edit User">
+                            <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                            </svg>
+                            Edit
+                        </button>
+                        <button onclick="deleteUser(${user.id})" class="btn btn-danger btn-sm" title="Delete User">
+                            <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                            Delete
+                        </button>
+                    </div>
                 `;
                 grid.appendChild(card);
             });
@@ -248,6 +473,7 @@
             const username = document.getElementById('new-username').value;
             const password = document.getElementById('new-password').value;
             const is_admin = document.getElementById('new-is-admin').checked;
+            const browser_limit = parseInt(document.getElementById('new-browser-limit').value) || 10;
 
             if (!username || !password) {
                 showToast('Please fill all fields', 'error');
@@ -257,17 +483,60 @@
             const res = await fetch('/api/users', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ username, password, is_admin })
+                body: JSON.stringify({ username, password, is_admin, browser_limit })
             });
 
             if (res.ok) {
                 showToast('User created successfully', 'success');
                 document.getElementById('new-username').value = '';
                 document.getElementById('new-password').value = '';
+                document.getElementById('new-browser-limit').value = '10';
+                document.getElementById('new-is-admin').checked = false;
                 fetchUsers();
             } else {
                 const err = await res.json();
                 showToast(err.detail || 'Failed to create user', 'error');
+            }
+        }
+
+        function openEditModal(userId) {
+            const user = currentUsers.find(u => u.id === userId);
+            if (!user) return;
+
+            document.getElementById('edit-user-id').value = userId;
+            document.getElementById('edit-password').value = '';
+            document.getElementById('edit-browser-limit').value = user.browser_limit ?? 10;
+            document.getElementById('edit-is-admin').checked = user.is_admin;
+
+            document.getElementById('edit-modal').classList.add('active');
+        }
+
+        function closeEditModal() {
+            document.getElementById('edit-modal').classList.remove('active');
+        }
+
+        async function saveUserEdit() {
+            const userId = document.getElementById('edit-user-id').value;
+            const password = document.getElementById('edit-password').value;
+            const browser_limit = parseInt(document.getElementById('edit-browser-limit').value);
+            const is_admin = document.getElementById('edit-is-admin').checked;
+
+            const payload = { is_admin, browser_limit };
+            if (password) payload.password = password;
+
+            const res = await fetch(`/api/users/${userId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (res.ok) {
+                showToast('User updated successfully', 'success');
+                closeEditModal();
+                fetchUsers();
+            } else {
+                const err = await res.json();
+                showToast(err.detail || 'Failed to update user', 'error');
             }
         }
 
@@ -296,13 +565,30 @@
             const container = document.getElementById('toast-container');
             const toast = document.createElement('div');
             toast.className = `toast toast-${type}`;
-            toast.innerHTML = `<span>${message}</span>`;
+
+            const icons = {
+                success: '<svg class="toast-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg>',
+                error: '<svg class="toast-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>',
+                info: '<svg class="toast-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>'
+            };
+
+            toast.innerHTML = `${icons[type] || icons.info}<span>${message}</span>`;
             container.appendChild(toast);
             setTimeout(() => {
                 toast.style.opacity = '0';
                 setTimeout(() => toast.remove(), 300);
             }, 3000);
         }
+
+        // Close modal on escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeEditModal();
+        });
+
+        // Close modal on backdrop click
+        document.getElementById('edit-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'edit-modal') closeEditModal();
+        });
 
         document.addEventListener('DOMContentLoaded', () => {
             checkAdmin();

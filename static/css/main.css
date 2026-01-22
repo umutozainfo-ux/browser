@@ -403,6 +403,15 @@ a:hover {
   align-items: flex-end;
 }
 
+.stat-item.warning .stat-value {
+  color: var(--color-warning);
+}
+
+.stat-item.danger .stat-value {
+  color: var(--color-danger);
+  animation: pulse-danger 2s infinite;
+}
+
 .stat-label {
   font-size: 0.65rem;
   color: var(--color-text-muted);
