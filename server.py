@@ -385,7 +385,8 @@ class ConnectionManager:
                         "id": b.get("id"),
                         "mode": b.get("mode", "ephemeral"),
                         "profile_id": b.get("profile_id"),
-                        "owner": b.get("owner")
+                        "owner": b.get("owner"),
+                        "url": b.get("url", "about:blank")
                     }
                     for b in node.browsers
                     if isinstance(b, dict) and b.get("owner") == client.user["username"]
@@ -1106,13 +1107,13 @@ async def refresh_node(node_id: str, current_user: sqlite3.Row = Depends(get_cur
     if not node:
         raise HTTPException(status_code=404, detail="Node not found")
     
-    result = await connection_manager.send_node_command(node_id, "refresh")
+    result = await connection_manager.send_node_command(node_id, "restart")
     if result: 
         return result
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.post(f"{node.url}/refresh")
+            resp = await client.post(f"{node.url}/restart")
             return resp.json()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

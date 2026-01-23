@@ -64,15 +64,11 @@ class StealthNodeApp {
 
             const data = await res.json();
 
-            // Only update if current view is browsers to avoid interference
             if (this.currentView === 'browsers') {
-                const oldHash = this.getBrowserListHash();
+                // Ensure data is synchronized and the UI is rendered immediately
                 this.nodes = data.nodes || {};
-                const newHash = this.getBrowserListHash();
-
-                if (oldHash !== newHash) {
-                    this.syncInstances();
-                }
+                this.syncInstances();
+                this.renderGrid();
                 this.updateStats();
             }
         } catch (e) {
@@ -266,76 +262,11 @@ class StealthNodeApp {
 
     // Apply partial/diff update between existing nodes and newNodes
     applyPartialUpdate(newNodes) {
-        // If no existing nodes, adopt and render
-        if (!this.nodes || Object.keys(this.nodes).length === 0) {
-            this.nodes = newNodes || {};
-            this.syncInstances();
-            this.updateStats();
-            return;
-        }
-
-        // Determine node additions/removals
-        const oldNodeIds = new Set(Object.keys(this.nodes));
-        const newNodeIds = new Set(Object.keys(newNodes || {}));
-
-        // Nodes removed
-        for (const nid of oldNodeIds) {
-            if (!newNodeIds.has(nid)) {
-                // remove any instances belonging to this node
-                const removeKeys = this.instances.filter(i => i.nid === nid).map(i => i.key);
-                removeKeys.forEach(k => this.removeInstanceByKey(k));
-                delete this.nodes[nid];
-            }
-        }
-
-        // Nodes added or updated
-        for (const [nid, node] of Object.entries(newNodes || {})) {
-            const oldNode = this.nodes[nid];
-            if (!oldNode) {
-                // new node — add and create its instances
-                this.nodes[nid] = node;
-                if (node.browsers && Array.isArray(node.browsers)) {
-                    node.browsers.forEach(b => {
-                        const bid = (typeof b === 'object' && b !== null) ? b.id : b;
-                        if (bid) this.createInstance(nid, bid, node.url, b.profile_id, b.mode);
-                    });
-                }
-                continue;
-            }
-
-            // Existing node: compute browser-level diffs
-            const oldBrowsers = new Set((oldNode.browsers || []).map(b => (typeof b === 'object' ? b.id : b)));
-            const newBrowsers = new Set((node.browsers || []).map(b => (typeof b === 'object' ? b.id : b)));
-
-            // added browsers
-            for (const bid of newBrowsers) {
-                if (!oldBrowsers.has(bid)) {
-                    const binfo = (node.browsers || []).find(x => ((typeof x === 'object' && x.id === bid) || x === bid));
-                    this.createInstance(nid, bid, node.url, binfo && binfo.profile_id, binfo && binfo.mode);
-                }
-            }
-
-            // removed browsers
-            for (const bid of oldBrowsers) {
-                if (!newBrowsers.has(bid)) {
-                    this.removeInstanceByKey(`${nid}::${bid}`);
-                }
-            }
-
-            // metadata updates — update node reference and per-instance metadata
-            this.nodes[nid] = node;
-            // update instances metadata
-            for (const inst of this.instances.filter(i => i.nid === nid)) {
-                const bobj = (node.browsers || []).find(b => (typeof b === 'object' ? b.id === inst.bid : b === inst.bid));
-                if (bobj && typeof bobj === 'object') {
-                    if (inst.profileId !== bobj.profile_id) inst.profileId = bobj.profile_id;
-                    if (inst.modeAttr !== bobj.mode) inst.modeAttr = bobj.mode;
-                    this.updateGridItem(inst);
-                }
-            }
-        }
-
-        // update stats
+        // Force an immediate state adoption and UI render to ensure
+        // all new browsers appear instantly as they are created.
+        this.nodes = newNodes || {};
+        this.syncInstances();
+        this.renderGrid();
         this.updateStats();
     }
 
@@ -570,11 +501,13 @@ class StealthNodeApp {
             pc: null,
             dc: null,
             mode: 'ws', // connection mode (ws/rtc)
+            lastUrl: 'about:blank',
             canvas: null,
             video: null
         };
 
         this.instances.push(inst);
+        this.renderGrid();
 
         ws.onmessage = (e) => {
             const m = JSON.parse(e.data);
@@ -659,6 +592,12 @@ class StealthNodeApp {
         // Remove skeleton loading
         this.removeSkeletonLoading();
 
+        // Clear empty state if we now have instances
+        if (this.instances.length > 0) {
+            const emptyState = grid.querySelector('.empty-state');
+            if (emptyState) grid.innerHTML = '';
+        }
+
         // Show empty state if no instances
         if (this.instances.length === 0) {
             grid.innerHTML = `
@@ -700,40 +639,43 @@ class StealthNodeApp {
                                    class="browser-checkbox" 
                                    onchange="app.toggleSelect('${inst.key}')"
                                    ${this.selectedKeys.has(inst.key) ? 'checked' : ''}>
-                            <div>
-                                <div class="browser-id">${inst.bid.substring(0, 8)}</div>
+                            <div class="browser-meta">
+                                <div class="flex items-center gap-sm">
+                                    <div class="browser-id">${inst.bid.substring(0, 8)}</div>
+                                    <div id="browser-url-display-${safeId}" class="browser-current-url">about:blank</div>
+                                </div>
                                 <div class="flex gap-xs mt-xs">
                                     <span id="mode-tag-${safeId}" class="browser-mode-tag websocket">WebSocket</span>
                                     ${inst.modeAttr === 'persistent' ?
                         `<span class="browser-mode-tag persistent">Storage</span>` :
-                        `<span class="browser-mode-tag" style="background: rgba(255,255,255,0.05); color: var(--color-text-muted);">No Storage</span>`}
+                        `<span class="browser-mode-tag ephemeral">No Storage</span>`}
                                 </div>
                             </div>
                         </div>
-                        <div class="browser-card-controls">
-                            <button onclick="app.navAction('${inst.key}', 'back')" class="btn btn-icon btn-ghost" title="Back">
-                                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <div class="browser-card-controls visible">
+                            <button onclick="app.navAction('${inst.key}', 'back')" class="btn btn-icon btn-ghost btn-xs" title="Back">
+                                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
                                 </svg>
                             </button>
-                            <button onclick="app.navAction('${inst.key}', 'forward')" class="btn btn-icon btn-ghost" title="Forward">
-                                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <button onclick="app.navAction('${inst.key}', 'forward')" class="btn btn-icon btn-ghost btn-xs" title="Forward">
+                                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
                                 </svg>
                             </button>
-                            <button onclick="app.navAction('${inst.key}', 'refresh')" class="btn btn-icon btn-ghost" title="Refresh">
-                                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <button onclick="app.navAction('${inst.key}', 'refresh')" class="btn btn-icon btn-ghost btn-xs" title="Refresh">
+                                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
                                         d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                                 </svg>
                             </button>
-                            <button onclick="app.closeBrowser('${inst.key}')" class="btn btn-icon btn-danger" title="Close">
-                                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <button onclick="app.closeBrowser('${inst.key}')" class="btn btn-icon btn-danger btn-xs" title="Close">
+                                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                                 </svg>
                             </button>
-                            <button onclick="app.openModal('${inst.key}')" class="btn btn-icon btn-primary" title="Expand">
-                                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <button onclick="app.openModal('${inst.key}')" class="btn btn-icon btn-primary btn-xs" title="Expand">
+                                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
                                         d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
                                 </svg>
@@ -787,6 +729,12 @@ class StealthNodeApp {
         const wsView = document.getElementById(`view-ws-${safeId}`);
         const rtcView = document.getElementById(`view-rtc-${safeId}`);
         const tag = document.getElementById(`mode-tag-${safeId}`);
+        const urlDisplay = document.getElementById(`browser-url-display-${safeId}`);
+
+        if (urlDisplay && inst.lastUrl) {
+            urlDisplay.textContent = inst.lastUrl === 'about:blank' ? 'New Tab' : inst.lastUrl;
+            urlDisplay.title = inst.lastUrl;
+        }
 
         if (inst.mode === 'webrtc') {
             wsView?.classList.add('hidden');
@@ -1084,6 +1032,9 @@ class StealthNodeApp {
             const toastType = data.count === data.requested ? 'success' :
                 data.count > 0 ? 'info' : 'error';
             this.showToast(message, toastType);
+
+            // Immediately fetch state after a successful request to sync UI
+            setTimeout(() => this.fetchState(), 1000);
 
         } catch (e) {
             this.showToast(`Failed to spawn: ${e.message}`, 'error');

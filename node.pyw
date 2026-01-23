@@ -161,6 +161,26 @@ class NodeConfig:
     # Background task limits
     MAX_CONCURRENT_TASKS: int = field(default_factory=lambda: int(os.getenv("MAX_CONCURRENT_TASKS", max(100, (os.cpu_count() or 4) * 25))))
 
+    def get_browser_channel(self) -> Optional[str]:
+        """Detect if Google Chrome is installed on the system"""
+        if platform.system() == "Windows":
+            paths = [
+                os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+                os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+                os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+            ]
+            for p in paths:
+                if os.path.exists(p):
+                    return "chrome"
+        elif platform.system() == "Darwin": # macOS
+            if os.path.exists("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"):
+                return "chrome"
+        elif platform.system() == "Linux":
+            import shutil
+            if shutil.which("google-chrome"):
+                return "chrome"
+        return None
+
 Config = NodeConfig()
 
 # Task limiter to bound concurrent background tasks created with create_limited_task
@@ -1090,7 +1110,7 @@ class BrowserInstance:
                 user_data_dir=self.profile_path,
                 headless=Config.HEADLESS,
                 args=launch_args,
-                channel="chrome",
+                channel=Config.get_browser_channel(), # Use system chrome if available
                 handle_sigint=False,
                 handle_sigterm=False,
                 handle_sighup=False,
@@ -1104,7 +1124,7 @@ class BrowserInstance:
             self.browser = await self.playwright.chromium.launch(
                 headless=Config.HEADLESS,
                 args=launch_args,
-                channel="chrome"
+                channel=Config.get_browser_channel() # Use system chrome if available
             )
             self.context = await self.browser.new_context(**context_params)
             self.page = await self.context.new_page()
@@ -1982,10 +2002,22 @@ async def heartbeat_loop():
             }
             
             if should_send_list:
-                payload["browsers"] = [
-                    {"id": b.id, "mode": b.mode, "profile_id": b.profile_id, "owner": b.owner}
-                    for b in browser_manager.values()
-                ]
+                browser_list = []
+                for b in browser_manager.values():
+                    current_url = "about:blank"
+                    if b.page:
+                        try:
+                            current_url = b.page.url
+                        except:
+                            pass
+                    browser_list.append({
+                        "id": b.id, 
+                        "mode": b.mode, 
+                        "profile_id": b.profile_id, 
+                        "owner": b.owner,
+                        "url": current_url
+                    })
+                payload["browsers"] = browser_list
                 last_browser_ids = current_browser_ids
 
             async with httpx.AsyncClient(timeout=5.0) as client:
@@ -2499,6 +2531,21 @@ def main():
             def isatty(self): return False
         sys.stderr = NullWriter()
 
+    # Ensure browser is available (Portable Mode fallback)
+    def ensure_browser():
+        if Config.get_browser_channel() == "chrome":
+            logger.info("System Chrome detected. Skipping portable browser installation.")
+            return
+
+        try:
+            import subprocess
+            logger.info("Chrome not found. Ensuring portable Chromium is available...")
+            subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], capture_output=True)
+            logger.info("Portable browser verified.")
+        except Exception as e:
+            logger.error(f"Failed to verify/install portable browser: {e}")
+
+    ensure_browser()
     logger.info("=" * 60)
     logger.info("STEALTH NODE - ULTRA HIGH-PERFORMANCE BROWSER ENGINE")
     logger.info("=" * 60)
