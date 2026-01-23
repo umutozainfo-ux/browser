@@ -6,6 +6,7 @@ class StealthNodeApp {
     constructor() {
         // State
         this.nodes = {};
+        this.cachedNodes = {}; // Cache for offline resilience
         this.instances = []; // { key, nid, bid, url, ws, dc, pc, mode, canvas, video }
         this.selectedKeys = new Set();
         this.followMode = false;
@@ -15,12 +16,28 @@ class StealthNodeApp {
         this.focusedKey = null;
         this.isDragging = false;
         this.lastMove = 0;
+        this.isOffline = false;
+
+        // Connection state
+        this.connectionState = 'disconnected';
+        this.hubWs = null;
+        this.connectionAttempts = 0;
+        this.lastConnectionAttempt = 0;
+        this.lastConnected = 0;
+        this.lastMessageTime = 0;
+        this.lastPongTime = 0;
+        this.consecutiveErrors = 0;
+        this.healthCheckInterval = null;
 
         // Bind methods
         this.init = this.init.bind(this);
         this.initHub = this.initHub.bind(this);
         this.fetchState = this.fetchState.bind(this); // New method
         this.syncInstances = this.syncInstances.bind(this);
+        this.setOfflineMode = this.setOfflineMode.bind(this);
+        this.setOnlineMode = this.setOnlineMode.bind(this);
+        this.updateConnectionStatus = this.updateConnectionStatus.bind(this);
+        this.startConnectionHealthCheck = this.startConnectionHealthCheck.bind(this);
     }
 
     // Initialize the application
@@ -39,12 +56,18 @@ class StealthNodeApp {
     async fetchState() {
         try {
             const res = await fetch('/api/nodes');
+            if (res.status === 401) {
+                window.location.href = '/login';
+                return;
+            }
+            if (!res.ok) throw new Error('State fetch failed');
+
             const data = await res.json();
 
             // Only update if current view is browsers to avoid interference
             if (this.currentView === 'browsers') {
                 const oldHash = this.getBrowserListHash();
-                this.nodes = data.nodes;
+                this.nodes = data.nodes || {};
                 const newHash = this.getBrowserListHash();
 
                 if (oldHash !== newHash) {
@@ -54,6 +77,9 @@ class StealthNodeApp {
             }
         } catch (e) {
             console.error('[StealthNode] Failed to fetch state:', e);
+            if (this.connectionState !== 'connected') {
+                this.setOfflineMode();
+            }
         }
     }
 
@@ -93,33 +119,303 @@ class StealthNodeApp {
         document.querySelectorAll('.skeleton-card').forEach(el => el.remove());
     }
 
-    // Initialize WebSocket connection to hub
+    // Set offline mode - show cached data with offline indicators
+    setOfflineMode() {
+        if (this.isOffline) return;
+        this.isOffline = true;
+        console.log('[StealthNode] Entering offline mode');
+        this.nodes = this.cachedNodes; // Use cached data
+        this.syncInstances();
+        this.updateStats();
+        this.showOfflineNotification();
+    }
+
+    // Set online mode - resume normal operation
+    setOnlineMode() {
+        if (!this.isOffline) return;
+        this.isOffline = false;
+        console.log('[StealthNode] Entering online mode');
+        this.hideOfflineNotification();
+    }
+
+    // Show offline notification
+    showOfflineNotification() {
+        let notification = document.getElementById('offline-notification');
+        if (!notification) {
+            notification = document.createElement('div');
+            notification.id = 'offline-notification';
+            notification.className = 'offline-notification';
+            document.body.appendChild(notification);
+        }
+        notification.innerHTML = `
+            <div class="flex items-center gap-md">
+                <div class="flex items-center gap-sm">
+                    <span class="icon" style="font-size: 1.2rem;">⚠️</span>
+                    <div class="flex flex-col">
+                        <span style="font-weight: 600; color: var(--color-text-primary);">Connection Lost</span>
+                        <span style="font-size: 0.75rem; color: var(--color-text-muted);">Real-time updates paused. Reconnecting...</span>
+                    </div>
+                </div>
+                <button onclick="app.initHub()" class="btn btn-primary btn-sm" style="padding: 4px 12px; font-size: 0.75rem;">
+                    Reconnect Now
+                </button>
+            </div>
+        `;
+        notification.style.display = 'block';
+    }
+
+    // Hide offline notification
+    hideOfflineNotification() {
+        const notification = document.getElementById('offline-notification');
+        if (notification) {
+            notification.style.display = 'none';
+        }
+    }
+
+    // Initialize WebSocket connection to hub with professional connection management
     initHub() {
+        // Clean up any existing connection
+        if (this.hubWs) {
+            this.hubWs.close();
+            this.hubWs = null;
+        }
+
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const ws = new WebSocket(`${protocol}//${location.host}/ws/hub`);
+        const wsUrl = `${protocol}//${location.host}/ws/hub`;
+
+        console.log(`[StealthNode] Connecting to hub: ${wsUrl}`);
+        this.connectionState = 'connecting';
+        this.updateConnectionStatus();
+
+        const ws = new WebSocket(wsUrl);
+        this.hubWs = ws;
+        this.connectionAttempts = (this.connectionAttempts || 0) + 1;
+        this.lastConnectionAttempt = Date.now();
+
+        ws.onopen = () => {
+            console.log('[StealthNode] Hub connection established');
+            this.connectionState = 'connected';
+            this.connectionAttempts = 0;
+            this.lastConnected = Date.now();
+            this.consecutiveErrors = 0;
+            this.setOnlineMode();
+            this.updateConnectionStatus();
+            this.showToast('Connected to server', 'success');
+        };
 
         ws.onmessage = (e) => {
-            const msg = JSON.parse(e.data);
-            if (msg.type === 'update') {
-                // Check if the browser list has actually changed to avoid flickering
-                const oldBrowsers = this.getBrowserListHash();
-                this.nodes = msg.nodes;
-                const newBrowsers = this.getBrowserListHash();
+            try {
+                const msg = JSON.parse(e.data);
 
-                if (oldBrowsers !== newBrowsers) {
-                    this.syncInstances();
+                if (msg.type === 'update') {
+                    // Cache incoming nodes
+                    this.cachedNodes = msg.nodes;
+
+                    // Apply partial/diff update to avoid full UI re-render
+                    this.applyPartialUpdate(msg.nodes);
+                    this.lastMessageTime = Date.now();
+                } else if (msg.type === 'pong') {
+                    // Handle ping/pong for connection health
+                    this.lastPongTime = Date.now();
                 }
-                this.updateStats();
+            } catch (err) {
+                console.error('[StealthNode] Failed to parse message:', err);
             }
         };
 
-        ws.onclose = () => {
-            console.log('[StealthNode] Hub connection lost, reconnecting...');
-            setTimeout(() => this.initHub(), 1000);
+        ws.onclose = (event) => {
+            console.log(`[StealthNode] Hub connection closed (code: ${event.code}, reason: ${event.reason})`);
+            this.connectionState = 'disconnected';
+            this.hubWs = null;
+            this.setOfflineMode();
+            this.updateConnectionStatus();
+            // Implement exponential backoff for reconnection with jitter
+            // We still schedule the reconnect even if hidden, but also rely on visibilitychange
+            if (document.hidden) {
+                console.log('[StealthNode] Page hidden — reconnect will also trigger on visibilitychange');
+            }
+
+            const exp = Math.min(2 ** Math.min(this.connectionAttempts, 8), 64);
+            const backoffDelay = Math.min(1000 * exp, 30000);
+            const jitter = (Math.random() - 0.5) * 0.5 * backoffDelay; // ±25%
+            const delay = Math.max(500, backoffDelay + jitter);
+
+            console.log(`[StealthNode] Reconnecting in ${Math.round(delay)}ms (attempt ${this.connectionAttempts + 1})`);
+
+            setTimeout(() => {
+                if (this.connectionState !== 'connected') this.initHub();
+            }, delay);
         };
 
         ws.onerror = (err) => {
             console.error('[StealthNode] Hub connection error:', err);
+            this.consecutiveErrors = (this.consecutiveErrors || 0) + 1;
+            this.connectionState = 'error';
+            this.updateConnectionStatus();
+
+            // Don't immediately enter offline mode on error - wait for close event
+            if (this.consecutiveErrors > 3) {
+                console.warn('[StealthNode] Multiple connection errors, entering offline mode');
+                this.setOfflineMode();
+            }
+        };
+
+        // Set up connection health monitoring
+        this.startConnectionHealthCheck();
+    }
+
+    // Apply partial/diff update between existing nodes and newNodes
+    applyPartialUpdate(newNodes) {
+        // If no existing nodes, adopt and render
+        if (!this.nodes || Object.keys(this.nodes).length === 0) {
+            this.nodes = newNodes || {};
+            this.syncInstances();
+            this.updateStats();
+            return;
+        }
+
+        // Determine node additions/removals
+        const oldNodeIds = new Set(Object.keys(this.nodes));
+        const newNodeIds = new Set(Object.keys(newNodes || {}));
+
+        // Nodes removed
+        for (const nid of oldNodeIds) {
+            if (!newNodeIds.has(nid)) {
+                // remove any instances belonging to this node
+                const removeKeys = this.instances.filter(i => i.nid === nid).map(i => i.key);
+                removeKeys.forEach(k => this.removeInstanceByKey(k));
+                delete this.nodes[nid];
+            }
+        }
+
+        // Nodes added or updated
+        for (const [nid, node] of Object.entries(newNodes || {})) {
+            const oldNode = this.nodes[nid];
+            if (!oldNode) {
+                // new node — add and create its instances
+                this.nodes[nid] = node;
+                if (node.browsers && Array.isArray(node.browsers)) {
+                    node.browsers.forEach(b => {
+                        const bid = (typeof b === 'object' && b !== null) ? b.id : b;
+                        if (bid) this.createInstance(nid, bid, node.url, b.profile_id, b.mode);
+                    });
+                }
+                continue;
+            }
+
+            // Existing node: compute browser-level diffs
+            const oldBrowsers = new Set((oldNode.browsers || []).map(b => (typeof b === 'object' ? b.id : b)));
+            const newBrowsers = new Set((node.browsers || []).map(b => (typeof b === 'object' ? b.id : b)));
+
+            // added browsers
+            for (const bid of newBrowsers) {
+                if (!oldBrowsers.has(bid)) {
+                    const binfo = (node.browsers || []).find(x => ((typeof x === 'object' && x.id === bid) || x === bid));
+                    this.createInstance(nid, bid, node.url, binfo && binfo.profile_id, binfo && binfo.mode);
+                }
+            }
+
+            // removed browsers
+            for (const bid of oldBrowsers) {
+                if (!newBrowsers.has(bid)) {
+                    this.removeInstanceByKey(`${nid}::${bid}`);
+                }
+            }
+
+            // metadata updates — update node reference and per-instance metadata
+            this.nodes[nid] = node;
+            // update instances metadata
+            for (const inst of this.instances.filter(i => i.nid === nid)) {
+                const bobj = (node.browsers || []).find(b => (typeof b === 'object' ? b.id === inst.bid : b === inst.bid));
+                if (bobj && typeof bobj === 'object') {
+                    if (inst.profileId !== bobj.profile_id) inst.profileId = bobj.profile_id;
+                    if (inst.modeAttr !== bobj.mode) inst.modeAttr = bobj.mode;
+                    this.updateGridItem(inst);
+                }
+            }
+        }
+
+        // update stats
+        this.updateStats();
+    }
+
+    removeInstanceByKey(key) {
+        const idx = this.instances.findIndex(i => i.key === key);
+        if (idx === -1) return;
+        const inst = this.instances[idx];
+        const safeId = inst.key.replace(/[:]/g, '-');
+        document.getElementById(`card-${safeId}`)?.remove();
+        try { inst.ws?.close(); } catch (e) { }
+        try { inst.pc?.close(); } catch (e) { }
+        this.selectedKeys.delete(inst.key);
+        this.instances.splice(idx, 1);
+    }
+
+    // Connection health monitoring
+    startConnectionHealthCheck() {
+        if (this.healthCheckInterval) {
+            clearInterval(this.healthCheckInterval);
+        }
+
+        this.healthCheckInterval = setInterval(() => {
+            const now = Date.now();
+
+            // Check if we're supposed to be connected but haven't received messages
+            if (this.connectionState === 'connected') {
+                if (this.lastMessageTime && now - this.lastMessageTime > 60000) { // 1 minute
+                    console.warn('[StealthNode] No messages received for 60s, connection may be stale');
+                    this.connectionState = 'stale';
+                    this.updateConnectionStatus();
+                }
+
+                // Send periodic ping
+                if (this.hubWs && this.hubWs.readyState === WebSocket.OPEN) {
+                    try {
+                        this.hubWs.send(JSON.stringify({ type: 'ping', timestamp: now }));
+                    } catch (e) {
+                        console.error('[StealthNode] Failed to send ping:', e);
+                    }
+                }
+            }
+
+            // Check for ping timeout
+            if (this.lastPongTime && now - this.lastPongTime > 10000) { // 10 seconds
+                console.warn('[StealthNode] Ping timeout, connection unhealthy');
+                if (this.hubWs) {
+                    this.hubWs.close();
+                }
+            }
+        }, 10000); // Check every 10 seconds
+    }
+
+    // Update connection status indicator
+    updateConnectionStatus() {
+        let indicator = document.getElementById('connection-status');
+        if (!indicator) {
+            indicator = document.createElement('div');
+            indicator.id = 'connection-status';
+            indicator.className = 'connection-status';
+            document.body.appendChild(indicator);
+        }
+
+        const statusInfo = {
+            connecting: { text: 'Connecting...', class: 'connecting', icon: '🔄' },
+            connected: { text: 'Connected', class: 'connected', icon: '🟢' },
+            disconnected: { text: 'Disconnected', class: 'disconnected', icon: '🔴' },
+            error: { text: 'Connection Error', class: 'error', icon: '❌' },
+            stale: { text: 'Connection Stale', class: 'stale', icon: '🟡' }
+        };
+
+        const info = statusInfo[this.connectionState] || statusInfo.disconnected;
+        indicator.className = `connection-status ${info.class}`;
+        indicator.innerHTML = `${info.icon} ${info.text}`;
+
+        // Add click handler for manual reconnection
+        indicator.onclick = () => {
+            if (this.connectionState !== 'connecting') {
+                console.log('[StealthNode] Manual reconnection requested');
+                this.initHub();
+            }
         };
     }
 
@@ -143,7 +439,14 @@ class StealthNodeApp {
 
         // Update sidebar badge
         const badge = document.getElementById('browsers-badge');
-        if (badge) badge.textContent = totalBrowsers;
+        if (badge) {
+            badge.textContent = totalBrowsers;
+            badge.className = this.isOffline ? 'nav-badge offline' : 'nav-badge';
+        }
+
+        // Add offline class to stats containers
+        const statsContainer = document.querySelector('.stats-grid');
+        if (statsContainer) statsContainer.classList.toggle('offline-mode', this.isOffline);
     }
 
     // Sync browser instances with nodes
@@ -162,18 +465,28 @@ class StealthNodeApp {
             });
         });
 
-        // Remove stale instances
-        this.instances = this.instances.filter(inst => {
-            if (!currentKeys.has(inst.key)) {
-                const safeId = inst.key.replace(/[:]/g, '-');
-                document.getElementById(`card-${safeId}`)?.remove();
-                inst.ws?.close();
-                inst.pc?.close();
-                this.selectedKeys.delete(inst.key);
-                return false;
-            }
-            return true;
-        });
+        // Handle instances based on online/offline state
+        if (this.isOffline) {
+            // In offline mode, don't remove instances - just mark them as offline
+            this.instances.forEach(inst => {
+                this.updateInstanceOfflineStatus(inst, !currentKeys.has(inst.key));
+            });
+        } else {
+            // In online mode, remove truly stale instances (not in currentKeys)
+            this.instances = this.instances.filter(inst => {
+                if (!currentKeys.has(inst.key)) {
+                    const safeId = inst.key.replace(/[:]/g, '-');
+                    document.getElementById(`card-${safeId}`)?.remove();
+                    inst.ws?.close();
+                    inst.pc?.close();
+                    this.selectedKeys.delete(inst.key);
+                    return false;
+                }
+                // Mark as online
+                this.updateInstanceOfflineStatus(inst, false);
+                return true;
+            });
+        }
 
         // Add new instances
         Object.entries(this.nodes).forEach(([nid, node]) => {
@@ -182,7 +495,7 @@ class StealthNodeApp {
                 // bidInfo might be a string (id) or object {id, profile_id, mode, ...}
                 const bid = typeof bidInfo === 'object' && bidInfo !== null ? bidInfo.id : bidInfo;
                 if (!bid) return; // Skip invalid entries
-                
+
                 const mode = typeof bidInfo === 'object' && bidInfo !== null ? bidInfo.mode : 'ephemeral';
                 const profileId = typeof bidInfo === 'object' && bidInfo !== null ? bidInfo.profile_id : null;
                 const key = `${nid}::${bid}`;
@@ -190,6 +503,11 @@ class StealthNodeApp {
                 let inst = this.instances.find(i => i.key === key);
                 if (!inst) {
                     this.createInstance(nid, bid, node.url, profileId, mode);
+                    // Mark as offline if we're currently offline
+                    if (this.isOffline) {
+                        inst = this.instances.find(i => i.key === key);
+                        if (inst) this.updateInstanceOfflineStatus(inst, true);
+                    }
                 } else {
                     // Update metadata if it changed
                     if (profileId) inst.profileId = profileId;
@@ -197,8 +515,29 @@ class StealthNodeApp {
                 }
             });
         });
+    }
 
-        this.renderGrid();
+    // Update instance offline status
+    updateInstanceOfflineStatus(inst, isOffline) {
+        const safeId = inst.key.replace(/[:]/g, '-');
+        const card = document.getElementById(`card-${safeId}`);
+        if (card) {
+            if (isOffline) {
+                card.classList.add('offline');
+                // Add offline indicator
+                let indicator = card.querySelector('.offline-indicator');
+                if (!indicator) {
+                    indicator = document.createElement('div');
+                    indicator.className = 'offline-indicator';
+                    indicator.innerHTML = '<span class="icon">🔴</span> Offline';
+                    card.querySelector('.card-header').appendChild(indicator);
+                }
+            } else {
+                card.classList.remove('offline');
+                const indicator = card.querySelector('.offline-indicator');
+                if (indicator) indicator.remove();
+            }
+        }
     }
 
     // Helper to get a unique hash of the current browser setup
@@ -567,6 +906,14 @@ class StealthNodeApp {
                 this.selectedKeys.forEach(k => {
                     if (k !== key) this.sendMsg(k, payload);
                 });
+            }
+        });
+
+        // Reconnect when tab becomes active
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && (this.connectionState === 'disconnected' || this.connectionState === 'error')) {
+                console.log('[StealthNode] Tab visible and disconnected — initiating reconnection');
+                this.initHub();
             }
         });
     }

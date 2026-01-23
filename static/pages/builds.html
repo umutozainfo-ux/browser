@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Node Builds | StealthNode</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="/static/css/main.css">
+  <style>
+    .page-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: var(--space-xl);
+      padding-bottom: var(--space-md);
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    .actions-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-xl);
+      margin-bottom: var(--space-2xl);
+    }
+
+    .build-card {
+      background: var(--color-bg-card);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-xl);
+      padding: var(--space-lg);
+      transition: all var(--transition-base);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .build-card:hover {
+      border-color: var(--color-accent);
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-md);
+    }
+
+    .build-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 4px;
+      height: 100%;
+      background: var(--color-accent);
+      opacity: 0.5;
+    }
+
+    .build-info {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-xs);
+      margin-bottom: var(--space-md);
+    }
+
+    .build-name {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--color-text-primary);
+    }
+
+    .build-meta {
+      font-size: 0.8rem;
+      color: var(--color-text-muted);
+      font-family: var(--font-mono);
+    }
+
+    .token-box {
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-md);
+      padding: var(--space-md);
+      margin: var(--space-md) 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-md);
+    }
+
+    .token-text {
+      font-family: var(--font-mono);
+      font-size: 0.85rem;
+      color: var(--color-accent-light);
+      word-break: break-all;
+      flex: 1;
+    }
+
+    .build-controls {
+      display: flex;
+      gap: var(--space-sm);
+      flex-wrap: wrap;
+      margin-top: var(--space-lg);
+      padding-top: var(--space-md);
+      border-top: 1px solid var(--color-border);
+    }
+
+    .upload-zone {
+      border: 2px dashed var(--color-border);
+      border-radius: var(--radius-lg);
+      padding: var(--space-xl);
+      text-align: center;
+      cursor: pointer;
+      transition: all var(--transition-fast);
+    }
+
+    .upload-zone:hover,
+    .upload-zone.dragover {
+      border-color: var(--color-accent);
+      background: rgba(99, 102, 241, 0.05);
+    }
+
+    .file-input {
+      display: none;
+    }
+
+    .form-row {
+      display: flex;
+      gap: var(--space-md);
+      margin-bottom: var(--space-md);
+    }
+
+    .badge-size {
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--color-text-muted);
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+
+    .section-title {
+      font-size: 0.8rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--color-text-muted);
+      margin-bottom: var(--space-lg);
+      display: flex;
+      align-items: center;
+      gap: var(--space-md);
+    }
+
+    .section-title::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--color-border);
+    }
+  </style>
+</head>
+
+<body>
+  <div class="app-container">
+    <!-- Reusing sidebar structure from index.html -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <div class="sidebar-brand">
+          <div class="sidebar-brand-icon">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+            </svg>
+          </div>
+          <div class="sidebar-brand-text">
+            <h1>Stealth<span>Node</span></h1>
+            <p>Command Center</p>
+          </div>
+        </div>
+      </div>
+      <nav class="sidebar-nav">
+        <div class="nav-section">
+          <div class="nav-section-title">Admin</div>
+          <a href="/dashboard" class="nav-item">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+            <span>Dashboard</span>
+          </a>
+          <a href="/admin/builds" class="nav-item active">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+            </svg>
+            <span>Node Builds</span>
+          </a>
+        </div>
+      </nav>
+      <div class="sidebar-footer">
+        <a href="/auth/logout" class="nav-item" style="color: var(--color-danger);">
+          <span>Logout</span>
+        </a>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="header">
+        <div class="header-left">
+          <div class="breadcrumb">
+            <span>Admin</span>
+            <span class="breadcrumb-separator">/</span>
+            <span class="text-accent">Node Management</span>
+          </div>
+        </div>
+      </header>
+
+      <div class="page-content">
+        <div class="page-header">
+          <h2>Packaging & Distribution</h2>
+          <div class="badge badge-danger">Admin Vault</div>
+        </div>
+
+        <div class="actions-grid">
+          <!-- Create Build Card -->
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">Generate Build</h3>
+            </div>
+            <div class="card-body">
+              <p class="text-muted mb-md">Automatically package the current <code>node.py</code> into a distributable
+                bundle.</p>
+              <div class="form-row">
+                <input type="text" id="new-build-name" class="input" placeholder="Give it a name (e.g. windows-v1.4)">
+                <button onclick="createBuild()" class="btn btn-primary">Generate ZIP</button>
+              </div>
+              <div id="create-status" class="text-muted mt-sm" style="font-size: 0.8rem;"></div>
+            </div>
+          </div>
+
+          <!-- Upload Build Card -->
+          <div class="card">
+            <div class="card-header">
+              <h3 class="card-title">Upload Package</h3>
+            </div>
+            <div class="card-body">
+              <div class="form-row">
+                <input type="text" id="upload-build-name" class="input" placeholder="Display name">
+                <button onclick="document.getElementById('upload-file').click()" class="btn btn-secondary">Select
+                  File</button>
+              </div>
+              <input type="file" id="upload-file" class="file-input" onchange="uploadBuild()">
+              <div id="upload-status" class="text-muted mt-sm" style="font-size: 0.8rem;"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-title">Version History & Management</div>
+
+        <div id="builds-grid" class="browser-grid"
+          style="grid-template-columns: repeat(auto-fill, minmax(450px, 1fr));">
+          <!-- Builds loaded here -->
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    async function loadBuilds() {
+      const res = await fetch('/api/admin/builds');
+      const builds = await res.json();
+      const grid = document.getElementById('builds-grid');
+      grid.innerHTML = '';
+
+      builds.forEach(b => {
+        const date = new Date(b.created_at * 1000).toLocaleDateString('en-US', {
+          month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit'
+        });
+        const size = b.size ? `${(b.size / 1024 / 1024).toFixed(2)} MB` : 'Unknown size';
+
+        const card = document.createElement('div');
+        card.className = 'build-card';
+        card.innerHTML = `
+                    <div class="build-info">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <span class="build-name">${b.name || 'Unnamed Build'}</span>
+                            <span class="badge-size">${size}</span>
+                        </div>
+                        <span class="build-meta">ID: ${b.node_id} • ${date}</span>
+                    </div>
+
+                    <div class="token-box">
+                        <div class="token-text" id="token-${b.id}">${b.token.substring(0, 12)}...${b.token.substring(b.token.length - 4)}</div>
+                        <div style="display:flex; gap: 4px;">
+                             <button onclick="toggleToken(${b.id}, '${b.token}')" class="btn btn-ghost btn-sm" id="btn-show-${b.id}">Show</button>
+                             <button onclick="copyToClipboard('${b.token}')" class="btn btn-ghost btn-sm">Copy</button>
+                        </div>
+                    </div>
+
+                    <div class="build-controls">
+                        <a href="/api/admin/builds/download/${b.id}" class="btn btn-primary btn-sm">
+                            Download Bundle
+                        </a>
+                        <button onclick="renameBuild(${b.id}, '${b.name}')" class="btn btn-secondary btn-sm">Rename</button>
+                        <button onclick="regenerateToken(${b.id})" class="btn btn-secondary btn-sm">Regen Token</button>
+                        <button onclick="replaceFile(${b.id})" class="btn btn-secondary btn-sm">Replace File</button>
+                        <button onclick="deleteBuild(${b.id})" class="btn btn-danger btn-sm">Delete</button>
+                        <input type="file" id="replace-${b.id}" style="display:none" onchange="performReplace(${b.id})">
+                    </div>
+                `;
+        grid.appendChild(card);
+      });
+    }
+
+    async function createBuild() {
+      const name = document.getElementById('new-build-name').value;
+      const status = document.getElementById('create-status');
+      status.textContent = '📦 Packaging node.py, please wait...';
+
+      try {
+        const res = await fetch('/api/admin/builds', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name })
+        });
+        if (res.ok) {
+          status.textContent = '✅ Build generated successfully!';
+          setTimeout(() => status.textContent = '', 3000);
+          loadBuilds();
+        }
+      } catch (e) { status.textContent = '❌ Generation failed.'; }
+    }
+
+    async function uploadBuild() {
+      const fileInput = document.getElementById('upload-file');
+      const nameInput = document.getElementById('upload-build-name');
+      const status = document.getElementById('upload-status');
+
+      if (!fileInput.files.length) return;
+
+      const formData = new FormData();
+      formData.append('file', fileInput.files[0]);
+      if (nameInput.value) formData.append('name', nameInput.value);
+
+      status.textContent = '🚀 Uploading package...';
+
+      try {
+        const res = await fetch('/api/admin/builds/upload', {
+          method: 'POST',
+          body: formData
+        });
+        if (res.ok) {
+          status.textContent = '✅ Upload complete!';
+          loadBuilds();
+        }
+      } catch (e) { status.textContent = '❌ Upload failed.'; }
+    }
+
+    async function regenerateToken(id) {
+      if (!confirm('This will invalidate the current token. Continue?')) return;
+      const res = await fetch(`/api/admin/builds/${id}/regenerate-token`, { method: 'POST' });
+      if (res.ok) loadBuilds();
+    }
+
+    async function deleteBuild(id) {
+      if (!confirm('Permanently delete this build?')) return;
+      const res = await fetch(`/api/admin/builds/${id}`, { method: 'DELETE' });
+      if (res.ok) loadBuilds();
+    }
+
+    async function renameBuild(id, oldName) {
+      const name = prompt('Enter new name:', oldName);
+      if (!name) return;
+      const res = await fetch(`/api/admin/builds/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
+      if (res.ok) loadBuilds();
+    }
+
+    function replaceFile(id) {
+      document.getElementById(`replace-${id}`).click();
+    }
+
+    async function performReplace(id) {
+      const fileInput = document.getElementById(`replace-${id}`);
+      if (!fileInput.files.length) return;
+
+      const formData = new FormData();
+      formData.append('file', fileInput.files[0]);
+
+      const res = await fetch(`/api/admin/builds/${id}/replace`, {
+        method: 'POST',
+        body: formData
+      });
+      if (res.ok) {
+        alert('File replaced successfully');
+        loadBuilds();
+      }
+    }
+
+    function toggleToken(id, fullToken) {
+      const el = document.getElementById(`token-${id}`);
+      const btn = document.getElementById(`btn-show-${id}`);
+      if (btn.textContent === 'Show') {
+        el.textContent = fullToken;
+        btn.textContent = 'Hide';
+      } else {
+        el.textContent = fullToken.substring(0, 12) + '...' + fullToken.substring(fullToken.length - 4);
+        btn.textContent = 'Show';
+      }
+    }
+
+    function copyToClipboard(text) {
+      navigator.clipboard.writeText(text);
+      alert('Token copied to clipboard');
+    }
+
+    document.addEventListener('DOMContentLoaded', loadBuilds);
+  </script>
+</body>
+
+</html>

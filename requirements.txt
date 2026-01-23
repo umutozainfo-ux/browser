@@ -1,5 +1,5 @@
 fastapi
-uvicorn
+uvicorn[standard]
 httpx
 pydantic
 websockets
@@ -10,3 +10,9 @@ aiortc
 av
 passlib
 python-multipart
+psutil
+pyinstaller
+redis
+pystray
+Pillow
+greenlet

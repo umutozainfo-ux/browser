@@ -2,3 +2,7 @@ profiles
 hub_data.db
 __pycache__/
 *.pyc
+logs/
+build/
+*.spec
+node.exe
