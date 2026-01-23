@@ -13,7 +13,7 @@ import httpx
 import uvicorn
 import sqlite3
 from passlib.context import CryptContext
-from fastapi import FastAPI, HTTPException, Depends, status, WebSocket, WebSocketDisconnect, Form, Response, Cookie, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, status, WebSocket, WebSocketDisconnect, Form, Response, Cookie, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
@@ -1100,60 +1100,188 @@ async def node_command_endpoint(websocket: WebSocket, node_id: str):
 
 @app.websocket("/ws/ui/stream/{node_id}/{browser_id}")
 async def ui_stream_proxy(websocket: WebSocket, node_id: str, browser_id: str):
-    """Proxies UI commands and node frames through the server tunnel"""
+    """
+    Proxies UI commands and node frames through the server tunnel.
+    This is the fallback when P2P WebRTC connections fail.
+    """
     await websocket.accept()
+    logger.info(f"[Stream Relay] Starting for {node_id}/{browser_id}")
+    
+    # Check if node is connected
+    if node_id not in connection_manager._node_sockets:
+        logger.warning(f"[Stream Relay] Node {node_id} not connected")
+        await websocket.close(code=1011, reason="Node not connected")
+        return
     
     # We use a queue to handle messages coming from the node for this specific browser
-    queue = asyncio.Queue()
+    queue = asyncio.Queue(maxsize=10)  # Limit queue size to prevent memory issues
     
     # Register this UI client as a listener for this browser on this node
-    # The connection_manager needs a way to route specific node messages to this UI
     task_id = f"stream_{node_id}_{browser_id}_{secrets.token_hex(4)}"
     
+    node_to_ui_task = None
+    ui_to_node_task = None
+    
     try:
+        # Register the stream queue before sending start command
+        connection_manager._active_streams[task_id] = queue
+        
         # 1. Notify the node to start streaming this browser OVER THE TUNNEL
-        await connection_manager.send_node_command(node_id, "start_stream", {
+        start_result = await connection_manager.send_node_command(node_id, "start_stream", {
             "browser_id": browser_id,
             "stream_id": task_id
-        })
+        }, timeout=10.0)
+        
+        if not start_result or start_result.get("status") == "error":
+            logger.error(f"[Stream Relay] Failed to start stream for {browser_id}")
+            await websocket.close(code=1011, reason="Failed to start stream")
+            return
+        
+        logger.info(f"[Stream Relay] Stream started: {task_id}")
 
         # Internal listener to catch frames from node and push to UI
         async def node_to_ui():
+            frames_sent = 0
             try:
                 while True:
-                    # In a real implementation, the node sends frames back via node_command_endpoint
-                    # which then needs to be routed here. For now, we'll implement the routing logic.
-                    msg = await queue.get()
-                    await websocket.send_json(msg)
-            except:
-                pass
+                    try:
+                        # Wait for frame with timeout
+                        msg = await asyncio.wait_for(queue.get(), timeout=30.0)
+                        await websocket.send_json(msg)
+                        frames_sent += 1
+                        if frames_sent % 100 == 0:
+                            logger.debug(f"[Stream Relay] Sent {frames_sent} frames for {browser_id}")
+                    except asyncio.TimeoutError:
+                        # No frames for 30s, send keepalive
+                        logger.debug(f"[Stream Relay] No frames for 30s, sending keepalive")
+                        try:
+                            await websocket.send_json({"type": "keepalive"})
+                        except:
+                            break
+            except WebSocketDisconnect:
+                logger.info(f"[Stream Relay] UI disconnected for {browser_id}")
+            except Exception as e:
+                logger.error(f"[Stream Relay] node_to_ui error: {e}")
 
         # 2. UI to Node (Commands)
         async def ui_to_node():
             try:
                 while True:
-                    data = await websocket.receive_json()
-                    # Wrap the UI action into a node command
-                    # We use wait=False for performance (fire-and-forget for mouse/keys)
-                    await connection_manager.send_node_command(node_id, "browser_action", {
-                        "browser_id": browser_id,
-                        "action": data
-                    }, wait=False)
-            except:
+                    try:
+                        data = await asyncio.wait_for(websocket.receive_json(), timeout=60.0)
+                        # Wrap the UI action into a node command
+                        # We use wait=False for performance (fire-and-forget for mouse/keys)
+                        await connection_manager.send_node_command(node_id, "browser_action", {
+                            "browser_id": browser_id,
+                            "action": data
+                        }, wait=False)
+                    except asyncio.TimeoutError:
+                        # No commands for 60s is fine, just continue
+                        continue
+            except WebSocketDisconnect:
+                logger.info(f"[Stream Relay] UI command channel closed for {browser_id}")
+            except Exception as e:
+                logger.error(f"[Stream Relay] ui_to_node error: {e}")
+        
+        # Run both tasks concurrently
+        node_to_ui_task = asyncio.create_task(node_to_ui())
+        ui_to_node_task = asyncio.create_task(ui_to_node())
+        
+        # Wait for either task to complete (usually due to disconnect)
+        done, pending = await asyncio.wait(
+            [node_to_ui_task, ui_to_node_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        
+        # Cancel any pending tasks
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
                 pass
 
-        # Set the routing in the connection manager
-        connection_manager._active_streams[task_id] = queue
-        
-        await asyncio.gather(node_to_ui(), ui_to_node())
-
+    except WebSocketDisconnect:
+        logger.info(f"[Stream Relay] WebSocket disconnected for {browser_id}")
     except Exception as e:
-        logger.error(f"Stream proxy error: {e}")
+        logger.error(f"[Stream Relay] Error: {e}")
     finally:
+        # Clean up
         if task_id in connection_manager._active_streams:
             del connection_manager._active_streams[task_id]
-        # Tell node to stop streaming
-        await connection_manager.send_node_command(node_id, "stop_stream", {"browser_id": browser_id})
+        
+        # Cancel tasks if they're still running
+        for task in [node_to_ui_task, ui_to_node_task]:
+            if task and not task.done():
+                task.cancel()
+        
+        # Tell node to stop streaming (don't wait for response)
+        try:
+            await connection_manager.send_node_command(
+                node_id, "stop_stream", 
+                {"browser_id": browser_id}, 
+                wait=False
+            )
+        except:
+            pass
+        
+        logger.info(f"[Stream Relay] Stopped for {browser_id}")
+
+# =============================================================================
+# WEBRTC SIGNALING - P2P RELAY THROUGH SERVER
+# =============================================================================
+# This allows true P2P connections even when hosted on Render/HuggingFace
+# The server only handles signaling, actual video/control goes direct P2P
+
+@app.post("/api/rtc/offer/{node_id}/{browser_id}")
+async def webrtc_signaling_offer(node_id: str, browser_id: str, request: Request, current_user: sqlite3.Row = Depends(get_current_user)):
+    """
+    Relay WebRTC offer from UI to Node and return the answer.
+    This enables P2P connection setup through the server.
+    """
+    try:
+        offer_data = await request.json()
+        
+        # Send the offer to the node via the command channel
+        result = await connection_manager.send_node_command(
+            node_id, 
+            "rtc_offer", 
+            {"browser_id": browser_id, "offer": offer_data},
+            timeout=60.0
+        )
+        
+        if result and result.get("answer"):
+            return result["answer"]
+        elif result and result.get("error"):
+            return {"error": result["error"]}
+        else:
+            return {"error": "Node did not respond to WebRTC offer"}
+            
+    except Exception as e:
+        logger.error(f"WebRTC signaling error: {e}")
+        return {"error": str(e)}
+
+@app.post("/api/rtc/ice/{node_id}/{browser_id}")
+async def webrtc_ice_candidate(node_id: str, browser_id: str, request: Request, current_user: sqlite3.Row = Depends(get_current_user)):
+    """
+    Relay ICE candidates from UI to Node for P2P connection establishment.
+    """
+    try:
+        ice_data = await request.json()
+        
+        # Fire and forget - ICE candidates don't need response
+        await connection_manager.send_node_command(
+            node_id,
+            "rtc_ice",
+            {"browser_id": browser_id, "candidate": ice_data},
+            wait=False
+        )
+        
+        return {"status": "ok"}
+        
+    except Exception as e:
+        logger.error(f"ICE relay error: {e}")
+        return {"error": str(e)}
 
 @app.delete("/api/delete_profile/{node_id}/{profile_id:path}")
 async def delete_remote_profile(node_id: str, profile_id: str, current_user: sqlite3.Row = Depends(get_current_user)):

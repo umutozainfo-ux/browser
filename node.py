@@ -985,7 +985,7 @@ class BrowserInstance:
         'tracks', '_last_pts', '_frames_sent', '_last_frame_log', 'input_lock',
         'profile_path', 'cdp', '_mouse_x', '_mouse_y', '_mouse_down',
         '_error_count', '_last_error', '_created_at', '_frame_buffer',
-        '_cleanup_lock', '_is_cleaning'
+        '_cleanup_lock', '_is_cleaning', '_last_tunnel_frame'
     ]
     
     def __init__(self, bid: str, mode: str = "ephemeral", profile_id: Optional[str] = None, owner: str = "system"):
@@ -1034,6 +1034,9 @@ class BrowserInstance:
         self._mouse_x = 0
         self._mouse_y = 0
         self._mouse_down = False
+        
+        # Tunnel stream rate limiting
+        self._last_tunnel_frame = 0
 
     async def launch(self):
         """Launch browser with retry logic and error handling"""
@@ -1382,21 +1385,25 @@ class BrowserInstance:
                     self.websockets.remove(ws)
 
         # TUNNEL RELAY: If this browser has an active stream to the hub
+        # Rate limit to prevent server overload (max 10 fps through relay)
         global command_ws, active_tunnel_streams
         if self.id in active_tunnel_streams and command_ws:
-            stream_id = active_tunnel_streams[self.id]
-            
-            if isinstance(b64_data, (bytes, bytearray)):
-                send_b64 = base64.b64encode(b64_data).decode('utf-8')
-            else:
-                send_b64 = b64_data
+            now = time.time()
+            if now - self._last_tunnel_frame >= 0.1:  # 100ms = 10fps
+                self._last_tunnel_frame = now
+                stream_id = active_tunnel_streams[self.id]
                 
-            msg = {
-                "task_id": stream_id, # Hub uses task_id starting with stream_ to route
-                "result": {"type": "frame", "data": send_b64}
-            }
-            
-            asyncio.create_task(self._send_to_command_ws(msg))
+                if isinstance(b64_data, (bytes, bytearray)):
+                    send_b64 = base64.b64encode(b64_data).decode('utf-8')
+                else:
+                    send_b64 = b64_data
+                    
+                msg = {
+                    "task_id": stream_id, # Hub uses task_id starting with stream_ to route
+                    "result": {"type": "frame", "data": send_b64}
+                }
+                
+                asyncio.create_task(self._send_to_command_ws(msg))
 
         # Distribute to WebRTC tracks — hand raw bytes to image worker when possible
         if self.tracks:
@@ -1814,6 +1821,128 @@ class BrowserManager:
 browser_manager = BrowserManager()
 
 # =============================================================================
+# WEBRTC SIGNALING HELPERS FOR P2P THROUGH SERVER
+# =============================================================================
+# When hosting on Render/HuggingFace, direct WebRTC connections can't be initiated
+# because the UI can't reach the node directly. Instead, signaling goes through
+# the server's command channel, but actual media/data flows P2P once connected.
+
+# Track pending ICE candidates per browser (for trickle ICE)
+pending_ice_candidates: Dict[str, List[dict]] = {}
+
+async def handle_webrtc_offer_internal(bid: str, offer_data: dict) -> dict:
+    """
+    Handle a WebRTC offer for a browser, coming through the server command channel.
+    Returns the answer to be sent back through the server.
+    """
+    try:
+        if bid not in browser_manager:
+            raise ValueError(f"Browser {bid} not found")
+        
+        logger.info(f"[P2P Signaling] Processing WebRTC offer for {bid}")
+        
+        # Create RTCPeerConnection with multiple STUN servers for better NAT traversal
+        pc = RTCPeerConnection(configuration=RTCConfiguration(
+            iceServers=[
+                RTCIceServer(urls=["stun:stun.l.google.com:19302"]),
+                RTCIceServer(urls=["stun:stun1.l.google.com:19302"]),
+                RTCIceServer(urls=["stun:stun2.l.google.com:19302"]),
+                RTCIceServer(urls=["stun:stun3.l.google.com:19302"]),
+                RTCIceServer(urls=["stun:stun4.l.google.com:19302"]),
+            ]
+        ))
+        browser_manager[bid].pcs.append(pc)
+        
+        # Create video track
+        track = BrowserVideoTrack()
+        browser_manager[bid].tracks.append(track)
+        
+        pc.addTransceiver("video", direction="sendonly")
+        sender = pc.getSenders()[0]
+        sender.replaceTrack(track)
+        
+        @pc.on("datachannel")
+        def on_datachannel(channel):
+            logger.info(f"[P2P] DataChannel created for {bid}")
+            
+            @channel.on("message")
+            def on_message(message):
+                try:
+                    action = json.loads(message)
+                    task_limiter.create_limited_task(browser_manager[bid].handle_input(action))
+                except Exception as e:
+                    logger.error(f"DC Parse Error: {e}")
+        
+        @pc.on("connectionstatechange")
+        async def on_state():
+            logger.info(f"[P2P] Connection state for {bid}: {pc.connectionState}")
+            if pc.connectionState == "connected":
+                logger.info(f"[P2P] ✓ P2P connection established for {bid}")
+            elif pc.connectionState in ["failed", "closed", "disconnected"]:
+                if bid in browser_manager:
+                    if pc in browser_manager[bid].pcs:
+                        browser_manager[bid].pcs.remove(pc)
+                    if track in browser_manager[bid].tracks:
+                        browser_manager[bid].tracks.remove(track)
+        
+        # Set remote description from offer
+        offer = RTCSessionDescription(sdp=offer_data["sdp"], type=offer_data["type"])
+        await pc.setRemoteDescription(offer)
+        
+        # Apply any pending ICE candidates
+        if bid in pending_ice_candidates:
+            logger.info(f"[P2P Signaling] Applying {len(pending_ice_candidates[bid])} pending ICE candidates for {bid}")
+            for candidate_data in pending_ice_candidates[bid]:
+                try:
+                    if candidate_data.get("candidate"):
+                        await pc.addIceCandidate(candidate_data)
+                except Exception as e:
+                    logger.warning(f"Failed to add pending ICE candidate: {e}")
+            del pending_ice_candidates[bid]
+        
+        # Create and set local description
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
+        
+        # Wait for ICE gathering to complete for better connectivity in restricted networks
+        try:
+            wait_start = time.time()
+            while pc.iceGatheringState != 'complete' and time.time() - wait_start < 3.0:
+                await asyncio.sleep(0.1)
+            logger.info(f"[P2P Signaling] ICE gathering for {bid} finished in {time.time() - wait_start:.2f}s with state: {pc.iceGatheringState}")
+        except Exception as e:
+            logger.warning(f"[P2P Signaling] Error during ICE gathering wait: {e}")
+        
+        return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+    except Exception as e:
+        logger.error(f"[P2P Signaling] CRITICAL ERROR in handle_webrtc_offer_internal: {e}")
+        logger.error(traceback.format_exc())
+        raise e
+
+async def handle_ice_candidate_internal(bid: str, candidate_data: dict):
+    """
+    Handle an ICE candidate for a browser, coming through the server command channel.
+    """
+    if bid not in browser_manager:
+        return
+    
+    # Find the peer connection for this browser
+    browser = browser_manager[bid]
+    if browser.pcs:
+        pc = browser.pcs[-1]  # Use the most recent peer connection
+        try:
+            if candidate_data.get("candidate"):
+                await pc.addIceCandidate(candidate_data)
+                logger.debug(f"[P2P] Added ICE candidate for {bid}")
+        except Exception as e:
+            logger.warning(f"Failed to add ICE candidate for {bid}: {e}")
+    else:
+        # Store for later if no PC yet
+        if bid not in pending_ice_candidates:
+            pending_ice_candidates[bid] = []
+        pending_ice_candidates[bid].append(candidate_data)
+
+# =============================================================================
 # FASTAPI APPLICATION
 # =============================================================================
 @asynccontextmanager
@@ -1942,7 +2071,7 @@ hub_connection = HubConnection()
 # =============================================================================
 async def command_loop():
     """Maintains a persistent websocket to the hub for receiving commands"""
-    global node_status, node_error
+    global node_status, node_error, command_ws
     reconnect_delay = hub_connection.base_delay
     max_reconnect_delay = hub_connection.max_backoff_delay
 
@@ -1959,7 +2088,6 @@ async def command_loop():
                 close_timeout=10,
                 max_size=None
             ) as ws:
-                global command_ws
                 command_ws = ws
                 logger.info("Command channel connected")
                 # Mark success and reset backoff
@@ -2037,6 +2165,29 @@ async def command_loop():
                                 if bid in browser_manager:
                                     await browser_manager[bid].handle_input(action)
                                 result = {"status": "ok"}
+                            elif command == "rtc_offer":
+                                # WebRTC signaling: handle offer from UI through server
+                                bid = payload.get("browser_id")
+                                offer = payload.get("offer")
+                                logger.info(f"[Task] Handling WebRTC offer for {bid}")
+                                if bid not in browser_manager:
+                                    logger.warning(f"[Task] Browser {bid} not found for WebRTC offer")
+                                    result = {"error": "Browser not found"}
+                                else:
+                                    try:
+                                        answer = await handle_webrtc_offer_internal(bid, offer)
+                                        logger.info(f"[Task] WebRTC answer generated for {bid}")
+                                        result = {"answer": answer}
+                                    except Exception as rtc_e:
+                                        logger.error(f"[Task] WebRTC offer handling failed for {bid}: {rtc_e}")
+                                        result = {"error": str(rtc_e)}
+                            elif command == "rtc_ice":
+                                # WebRTC signaling: handle ICE candidate from UI through server
+                                bid = payload.get("browser_id")
+                                candidate = payload.get("candidate")
+                                if bid in browser_manager:
+                                    await handle_ice_candidate_internal(bid, candidate)
+                                result = {"status": "ok"}
                         except Exception as te:
                             logger.error(f"Task Execution Error: {te}")
                             health_monitor.record_error(str(te), f"task_{command}")
@@ -2069,7 +2220,6 @@ async def command_loop():
                         raise
                     
         except Exception as e:
-            global command_ws
             command_ws = None
             logger.error(f"Command channel error: {e}")
             health_monitor.record_error(str(e), "command_channel")
@@ -2565,6 +2715,14 @@ echo Deleting this batch file...
         hub_url = Config.SERVER_URL
         webbrowser.open(hub_url)
 
+    def _on_view_logs(self, icon, item):
+        """Open the log folder in explorer"""
+        if os.path.exists(LOGS_DIR):
+            if platform.system() == "Windows":
+                os.startfile(LOGS_DIR)
+            else:
+                subprocess.Popen(['open', LOGS_DIR] if platform.system() == 'Darwin' else ['xdg-open', LOGS_DIR])
+
     def run(self):
         """Initialize and run the tray icon in its own event loop"""
         if pystray is None:
@@ -2574,6 +2732,7 @@ echo Deleting this batch file...
         try:
             menu = (
                 item('Open Command Center', self._on_open_hub, default=True),
+                item('View Logs', self._on_view_logs),
                 item('Restart Node', self._on_restart),
                 pystray.Menu.SEPARATOR,
                 item('Exit', self._on_exit)

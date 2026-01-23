@@ -4,7 +4,7 @@ httpx
 pydantic
 websockets
 playwright
-opencv-python
+opencv-python-headless
 numpy
 aiortc
 av

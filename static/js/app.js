@@ -585,21 +585,48 @@ class StealthNodeApp {
     }
 
     // Setup WebRTC connection for an instance
+    // Uses server-signaled P2P when on HTTPS or when node is remote
     async setupWebRTC(inst) {
         try {
+            const isHttps = window.location.protocol === 'https:';
+            const nodeHost = new URL(inst.url).hostname;
+            const currentHost = window.location.hostname;
+
+            // Determine if we need server-signaled P2P or can connect directly
+            const needsServerSignaling = isHttps ||
+                (nodeHost !== 'localhost' && nodeHost !== '127.0.0.1' && nodeHost !== currentHost);
+
             const pc = new RTCPeerConnection({
-                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' }
+                ]
             });
             inst.pc = pc;
 
             pc.ontrack = (e) => {
+                console.log(`[WebRTC] Track received for ${inst.bid}`);
                 if (inst.video) {
                     inst.video.srcObject = e.streams[0];
                     inst.video.onloadedmetadata = () => {
                         inst.video.play();
                         inst.mode = 'webrtc';
+                        console.log(`[WebRTC] ✓ P2P video active for ${inst.bid}`);
                         this.updateGridItem(inst);
                     };
+                }
+            };
+
+            pc.onconnectionstatechange = () => {
+                console.log(`[WebRTC] Connection state for ${inst.bid}: ${pc.connectionState}`);
+                if (pc.connectionState === 'connected') {
+                    inst.mode = 'webrtc';
+                    this.updateGridItem(inst);
+                } else if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+                    console.log(`[WebRTC] P2P failed for ${inst.bid}, falling back to WebSocket`);
+                    inst.mode = 'ws';
+                    this.updateGridItem(inst);
                 }
             };
 
@@ -607,28 +634,57 @@ class StealthNodeApp {
             const dc = pc.createDataChannel("control", { ordered: false });
             inst.dc = dc;
 
+            dc.onopen = () => {
+                console.log(`[WebRTC] DataChannel open for ${inst.bid} - P2P control active`);
+            };
+
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
 
-            const res = await fetch(`${inst.url}/api/offer/${inst.bid}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    sdp: pc.localDescription.sdp,
-                    type: pc.localDescription.type
-                })
-            });
+            let answer;
 
-            const answer = await res.json();
+            if (needsServerSignaling) {
+                // Use server-signaled P2P - server relays signaling only
+                console.log(`[WebRTC] Using server-signaled P2P for ${inst.bid}`);
+
+                const res = await fetch(`/api/rtc/offer/${inst.nid}/${inst.bid}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sdp: pc.localDescription.sdp,
+                        type: pc.localDescription.type
+                    })
+                });
+
+                answer = await res.json();
+            } else {
+                // Direct connection to node (local development)
+                console.log(`[WebRTC] Using direct P2P for ${inst.bid}`);
+
+                const res = await fetch(`${inst.url}/api/offer/${inst.bid}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sdp: pc.localDescription.sdp,
+                        type: pc.localDescription.type
+                    })
+                });
+
+                answer = await res.json();
+            }
+
             if (answer.error) {
-                console.log(`[RTC] Error for ${inst.bid}: ${answer.error}, using WebSocket`);
+                console.log(`[WebRTC] Error for ${inst.bid}: ${answer.error}, using WebSocket relay`);
                 inst.mode = 'ws';
                 this.updateGridItem(inst);
             } else {
                 await pc.setRemoteDescription(new RTCSessionDescription(answer));
+                console.log(`[WebRTC] Handshake complete for ${inst.bid}, waiting for connection...`);
             }
         } catch (e) {
-            console.error('[RTC] Setup failed for', inst.key, e);
+            console.error('[WebRTC] Setup failed for', inst.key, e);
+            inst.mode = 'ws';
+            this.updateGridItem(inst);
         }
     }
 
@@ -1025,8 +1081,15 @@ class StealthNodeApp {
         if (!inst) return;
 
         if (confirm(`Close browser ${inst.bid.substring(0, 8)}?`)) {
-            await fetch(`${inst.url}/close/${inst.bid}`, { method: 'POST' });
-            this.selectedKeys.delete(key);
+            // Use server API to close browser (works on HTTPS deployments)
+            try {
+                await fetch(`/api/close_browser/${inst.nid}/${inst.bid}`, { method: 'POST' });
+                this.selectedKeys.delete(key);
+                this.showToast('Browser closed', 'success');
+            } catch (e) {
+                console.error('Failed to close browser:', e);
+                this.showToast('Failed to close browser', 'error');
+            }
         }
     }
 
