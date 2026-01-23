@@ -160,7 +160,7 @@ class ProfileVault {
             await fetch(url);
 
             // Redirect to command center
-            window.location.href = '/';
+            window.location.href = '/dashboard';
         } catch (e) {
             this.showToast(`Launch failed: ${e.message}`, 'error');
         }

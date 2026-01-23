@@ -54,6 +54,7 @@ from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack, R
 from av import VideoFrame
 import fractions
 import webbrowser
+import socket
 
 # Optional Tray Icon imports
 try:
@@ -64,6 +65,18 @@ except ImportError:
     pystray = None
 
 # =============================================================================
+# DATA DIRECTORY CONFIGURATION
+# =============================================================================
+# Prioritize local directory for portability, fallback to AppData if needed
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROFILES_DIR = os.path.join(BASE_DIR, "profiles")
+LOGS_DIR = os.path.join(BASE_DIR, "logs")
+
+# Ensure directories exist
+os.makedirs(PROFILES_DIR, exist_ok=True)
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+# =============================================================================
 # LOGGING CONFIGURATION - Production Grade
 # =============================================================================
 def setup_logging():
@@ -71,7 +84,7 @@ def setup_logging():
     log_format = '%(asctime)s [%(levelname)s] [%(name)s:%(lineno)d] %(message)s'
     
     # Create logs directory
-    os.makedirs("logs", exist_ok=True)
+    os.makedirs(LOGS_DIR, exist_ok=True)
     
     # Root logger
     root_logger = logging.getLogger()
@@ -86,7 +99,7 @@ def setup_logging():
     
     # File handler with rotation (10MB max, keep 5 backups)
     file_handler = RotatingFileHandler(
-        "logs/node.log",
+        os.path.join(LOGS_DIR, "node.log"),
         maxBytes=10*1024*1024,
         backupCount=5,
         encoding='utf-8'
@@ -96,7 +109,7 @@ def setup_logging():
     
     # Error file handler
     error_handler = RotatingFileHandler(
-        "logs/node_errors.log",
+        os.path.join(LOGS_DIR, "node_errors.log"),
         maxBytes=10*1024*1024,
         backupCount=5,
         encoding='utf-8'
@@ -115,11 +128,16 @@ logger = setup_logging()
 # =============================================================================
 # CONFIGURATION - Optimized for Scale
 # =============================================================================
+# Global state for command relay
+active_tunnel_streams: Dict[str, str] = {} # browser_id -> stream_id
+command_ws = None
+command_ws_lock = asyncio.Lock()
+
 @dataclass
 class NodeConfig:
     """Centralized configuration with environment variable support"""
     NODE_ID: str = field(default_factory=lambda: os.getenv("NODE_ID", f"node-{str(uuid.uuid4())[:6]}"))
-    SERVER_URL: str = field(default_factory=lambda: os.getenv("SERVER_URL", "http://localhost:7860"))
+    SERVER_URL: str = field(default_factory=lambda: os.getenv("SERVER_URL", "https://server-latest-p0vo.onrender.com"))
     NODE_HOST: str = field(default_factory=lambda: os.getenv("NODE_HOST", "localhost"))
     NODE_PORT: int = field(default_factory=lambda: int(os.getenv("NODE_PORT", 8001)))
     HEADLESS: bool = field(default_factory=lambda: os.getenv("HEADLESS", "true").lower() == "true")
@@ -179,9 +197,51 @@ class NodeConfig:
             import shutil
             if shutil.which("google-chrome"):
                 return "chrome"
-        return None
+    def get_local_ip(self) -> str:
+        """Find the real network IP address of this machine"""
+        # Try primary method: Connect to a dummy IP to see which interface is used
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                # We don't actually send data, just "connect" to a public IP
+                s.connect(("10.255.255.255", 1))
+                ip = s.getsockname()[0]
+                if ip and not ip.startswith("127."):
+                    return ip
+        except Exception:
+            pass
+            
+        # Fallback 1: Get by hostname
+        try:
+            ip = socket.gethostbyname(socket.gethostname())
+            if ip and not ip.startswith("127."):
+                return ip
+        except Exception:
+            pass
+
+        # Fallback 2: List all interfaces (Windows/Linux/Mac)
+        try:
+            import socket
+            hostname = socket.gethostname()
+            # This can return multiple IPs, we try to find a non-local one
+            ips = socket.gethostbyname_ex(hostname)[2]
+            for ip in ips:
+                if not ip.startswith("127."):
+                    return ip
+        except Exception:
+            pass
+
+        return "127.0.0.1"
 
 Config = NodeConfig()
+
+# Auto-detect IP if host is set to 'localhost' or default
+if Config.NODE_HOST in ["localhost", "127.0.0.1"]:
+    detected_ip = Config.get_local_ip()
+    if detected_ip != "127.0.0.1":
+        Config.NODE_HOST = detected_ip
+        logger.info(f"NETWORK ACCESS ENABLED: Node is reachable at http://{Config.NODE_HOST}:{Config.NODE_PORT}")
+    else:
+        logger.warning("COULD NOT FIND LOCAL IP: Node is only reachable via 'localhost'. Remote PC access may fail.")
 
 # Task limiter to bound concurrent background tasks created with create_limited_task
 class TaskLimiter:
@@ -964,8 +1024,8 @@ class BrowserInstance:
         self._cleanup_lock = asyncio.Lock()
         self._is_cleaning = False
         
-        # Path for persistent profiles
-        self.profile_path = os.path.abspath(f"profiles/{self.profile_id}")
+        # Path for persistent profiles - Use Non-privileged DATA_DIR
+        self.profile_path = os.path.join(PROFILES_DIR, self.profile_id)
         if self.mode == "persistent":
             os.makedirs(self.profile_path, exist_ok=True)
             logger.info(f"Initialized persistent profile at {self.profile_path}")
@@ -1321,6 +1381,23 @@ class BrowserInstance:
                 if ws in self.websockets:
                     self.websockets.remove(ws)
 
+        # TUNNEL RELAY: If this browser has an active stream to the hub
+        global command_ws, active_tunnel_streams
+        if self.id in active_tunnel_streams and command_ws:
+            stream_id = active_tunnel_streams[self.id]
+            
+            if isinstance(b64_data, (bytes, bytearray)):
+                send_b64 = base64.b64encode(b64_data).decode('utf-8')
+            else:
+                send_b64 = b64_data
+                
+            msg = {
+                "task_id": stream_id, # Hub uses task_id starting with stream_ to route
+                "result": {"type": "frame", "data": send_b64}
+            }
+            
+            asyncio.create_task(self._send_to_command_ws(msg))
+
         # Distribute to WebRTC tracks — hand raw bytes to image worker when possible
         if self.tracks:
             if isinstance(b64_data, (bytes, bytearray)):
@@ -1343,6 +1420,17 @@ class BrowserInstance:
             await self._distribute_frame(raw)
         except Exception as e:
             logger.error(f"Frame handling error for {self.id}: {e}")
+
+    async def _send_to_command_ws(self, msg: dict):
+        """Helper to send data via the command WebSocket without blocking"""
+        global command_ws, command_ws_lock
+        if not command_ws:
+            return
+        async with command_ws_lock:
+            try:
+                await command_ws.send(json.dumps(msg))
+            except Exception:
+                pass
 
     def _process_and_push_webrtc(self, raw_bytes):
         """Process frame for WebRTC (runs in thread pool). Accepts raw bytes or base64 string."""
@@ -1639,9 +1727,8 @@ class BrowserManager:
                     return {"status": "error", "message": f"Profile {profile_id} is already in use"}
                 
                 if not profile_id:
-                    profiles_dir = os.path.abspath("profiles")
-                    if os.path.exists(profiles_dir):
-                        available_folders = [d for d in os.listdir(profiles_dir) if os.path.isdir(os.path.join(profiles_dir, d))]
+                    if os.path.exists(PROFILES_DIR):
+                        available_folders = [d for d in os.listdir(PROFILES_DIR) if os.path.isdir(os.path.join(PROFILES_DIR, d))]
                         idle_profiles = [p for p in available_folders if p not in active_profiles]
                         if idle_profiles:
                             profile_id = idle_profiles[0]
@@ -1872,6 +1959,8 @@ async def command_loop():
                 close_timeout=10,
                 max_size=None
             ) as ws:
+                global command_ws
+                command_ws = ws
                 logger.info("Command channel connected")
                 # Mark success and reset backoff
                 hub_connection.record_success()
@@ -1881,10 +1970,9 @@ async def command_loop():
 
                 # Immediately register with the hub to ensure server mapping is up-to-date
                 try:
-                    node_url = f"http://{Config.NODE_HOST}:{Config.NODE_PORT}"
                     payload = {
                         "node_id": Config.NODE_ID,
-                        "url": node_url,
+                        "url": f"http://{Config.NODE_HOST}:{Config.NODE_PORT}",
                         "browsers_count": len(browser_manager),
                         "status": node_status,
                         "error": node_error,
@@ -1932,6 +2020,23 @@ async def command_loop():
                             elif command == "restart":
                                 asyncio.create_task(supervisor.shutdown_and_restart())
                                 result = {"status": "ok", "message": "Restarting..."}
+                            elif command == "start_stream":
+                                bid = payload.get("browser_id")
+                                stream_id = payload.get("stream_id")
+                                active_tunnel_streams[bid] = stream_id
+                                logger.info(f"Started tunnel stream for {bid} -> {stream_id}")
+                                result = {"status": "ok"}
+                            elif command == "stop_stream":
+                                bid = payload.get("browser_id")
+                                if bid in active_tunnel_streams:
+                                    del active_tunnel_streams[bid]
+                                result = {"status": "ok"}
+                            elif command == "browser_action":
+                                bid = payload.get("browser_id")
+                                action = payload.get("action")
+                                if bid in browser_manager:
+                                    await browser_manager[bid].handle_input(action)
+                                result = {"status": "ok"}
                         except Exception as te:
                             logger.error(f"Task Execution Error: {te}")
                             health_monitor.record_error(str(te), f"task_{command}")
@@ -1964,6 +2069,8 @@ async def command_loop():
                         raise
                     
         except Exception as e:
+            global command_ws
+            command_ws = None
             logger.error(f"Command channel error: {e}")
             health_monitor.record_error(str(e), "command_channel")
             node_status = "reconnecting"
@@ -1984,8 +2091,6 @@ async def command_loop():
 async def heartbeat_loop():
     """Send periodic heartbeats to the server"""
     global node_status, node_error, last_browser_ids
-    node_url = f"http://{Config.NODE_HOST}:{Config.NODE_PORT}"
-    
     while True:
         try:
             current_browser_ids = set(browser_manager.keys())
@@ -1993,7 +2098,7 @@ async def heartbeat_loop():
             
             payload = {
                 "node_id": Config.NODE_ID,
-                "url": node_url,
+                "url": f"http://{Config.NODE_HOST}:{Config.NODE_PORT}",
                 "browsers_count": len(browser_manager),
                 "status": node_status,
                 "error": node_error,
@@ -2079,15 +2184,14 @@ async def trigger_restart():
 @app.get("/profiles")
 async def list_profiles():
     """List all stored profiles and their status"""
-    profiles_dir = os.path.abspath("profiles")
-    if not os.path.exists(profiles_dir):
+    if not os.path.exists(PROFILES_DIR):
         return {"profiles": []}
     
     active_profiles = {inst.profile_id: inst.id for inst in browser_manager.values() if inst.mode == "persistent"}
     
     results = []
-    for d in os.listdir(profiles_dir):
-        path = os.path.join(profiles_dir, d)
+    for d in os.listdir(PROFILES_DIR):
+        path = os.path.join(PROFILES_DIR, d)
         if os.path.isdir(path):
             try:
                 size = sum(f.stat().st_size for f in os.scandir(path) if f.is_file())
@@ -2109,7 +2213,7 @@ async def delete_profile(profile_id: str):
         return {"status": "error", "message": "Cannot delete an active profile"}
     
     import shutil
-    path = os.path.abspath(f"profiles/{profile_id}")
+    path = os.path.join(PROFILES_DIR, profile_id)
     if os.path.exists(path):
         shutil.rmtree(path)
         return {"status": "ok"}
@@ -2507,6 +2611,18 @@ signal.signal(signal.SIGTERM, signal_handler)
 # =============================================================================
 # MAIN ENTRY POINT
 # =============================================================================
+def find_available_port(start_port: int, host: str = "0.0.0.0") -> int:
+    """Find the first available port starting from start_port"""
+    port = start_port
+    while port < 65535:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind((host, port))
+                return port
+            except OSError:
+                port += 1
+    return start_port
+
 def main():
     """Main entry point for the node"""
     # Quick check for --wait flag before anything else
@@ -2516,6 +2632,39 @@ def main():
                 wait_time = int(sys.argv[i+1])
                 time.sleep(wait_time)
             except: pass
+
+    # Startup registration
+    def check_startup():
+        """Add the application to Windows startup if not already present"""
+        if platform.system() != "Windows":
+            return
+        try:
+            import winreg
+            # Get actual target path
+            if getattr(sys, 'frozen', False):
+                # If compiled EXE, use its path directly
+                target_path = sys.executable
+            else:
+                # If running as script, use pythonw and the script path
+                exe = sys.executable.replace("python.exe", "pythonw.exe")
+                target_path = f'"{exe}" "{os.path.abspath(sys.argv[0])}"'
+                
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            # We use HKCU to avoid requiring Administrator permissions
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_ALL_ACCESS) as key:
+                try:
+                    val, _ = winreg.QueryValueEx(key, "StealthNode")
+                    if val == target_path:
+                        return # Already set correctly
+                except FileNotFoundError:
+                    pass
+                
+                winreg.SetValueEx(key, "StealthNode", 0, winreg.REG_SZ, target_path)
+                logger.info(f"StealthNode registered to startup: {target_path}")
+        except Exception as e:
+            logger.error(f"Startup registration failed: {e}")
+
+    check_startup()
     
     # Fix for compiled EXE without console: ensure stdout/stderr are not None
     if sys.stdout is None:
@@ -2570,6 +2719,13 @@ def main():
     health_thread = threading.Thread(target=health_check_thread, daemon=True)
     health_thread.start()
     
+    # Dynamic Port Discovery to allow multiple nodes on same host
+    original_port = Config.NODE_PORT
+    Config.NODE_PORT = find_available_port(original_port)
+    
+    if Config.NODE_PORT != original_port:
+        logger.info(f"Port {original_port} was busy. Dynamic Discovery selected port {Config.NODE_PORT}")
+
     # Run the server
     # use_colors must be False if stdout is None to avoid crash in compiled EXE
     uvicorn.run(

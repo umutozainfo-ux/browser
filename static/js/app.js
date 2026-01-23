@@ -17,6 +17,7 @@ class StealthNodeApp {
         this.isDragging = false;
         this.lastMove = 0;
         this.isOffline = false;
+        this.autoRefresh = true; // Auto-sync enabled by default
 
         // Connection state
         this.connectionState = 'disconnected';
@@ -48,9 +49,28 @@ class StealthNodeApp {
         this.showSkeletonLoading();
 
         // Polling fallback every 5s in case WS is blocked
-        setInterval(() => this.fetchState(), 5000);
+        setInterval(() => {
+            if (this.autoRefresh) this.fetchState();
+        }, 5000);
 
         console.log('[StealthNode] Application initialized');
+    }
+
+    // Toggle auto-refresh behavior
+    toggleAutoRefresh() {
+        this.autoRefresh = !this.autoRefresh;
+        const btn = document.getElementById('auto-refresh-btn');
+        if (btn) {
+            btn.classList.toggle('active', this.autoRefresh);
+            btn.innerHTML = this.autoRefresh ?
+                '<span class="icon">🔄</span> Auto Sync: ON' :
+                '<span class="icon">⏸️</span> Auto Sync: OFF';
+        }
+        this.showToast(`Auto-sync ${this.autoRefresh ? 'enabled' : 'disabled'}`, 'info');
+
+        if (this.autoRefresh) {
+            this.fetchState(); // Immediate sync when turning ON
+        }
     }
 
     async fetchState() {
@@ -63,6 +83,12 @@ class StealthNodeApp {
             if (!res.ok) throw new Error('State fetch failed');
 
             const data = await res.json();
+
+            // Handle auto-refresh logic
+            if (!this.autoRefresh && this.instances.length > 0) {
+                this.updateStats();
+                return;
+            }
 
             if (this.currentView === 'browsers') {
                 // Ensure data is synchronized and the UI is rendered immediately
@@ -262,6 +288,9 @@ class StealthNodeApp {
 
     // Apply partial/diff update between existing nodes and newNodes
     applyPartialUpdate(newNodes) {
+        if (!this.autoRefresh && this.instances.length > 0) {
+            return;
+        }
         // Force an immediate state adoption and UI render to ensure
         // all new browsers appear instantly as they are created.
         this.nodes = newNodes || {};
@@ -487,8 +516,27 @@ class StealthNodeApp {
     // Create a new browser instance
     createInstance(nid, bid, nodeUrl, profileId = null, modeAttr = 'ephemeral') {
         const key = `${nid}::${bid}`;
-        const wsUrl = nodeUrl.replace('http', 'ws') + '/ws/' + bid;
-        const ws = new WebSocket(wsUrl);
+
+        // RELAY LOGIC: Use server tunnel if hosted on HTTPS or node is remote
+        // This bypasses mix-content blocking and NAT issues.
+        const isHttps = window.location.protocol === 'https:';
+        const nodeHost = new URL(nodeUrl).hostname;
+        const currentHost = window.location.hostname;
+
+        // Force relay if we are on HTTPS (due to mixed content) or if it's a remote node
+        const shouldUseRelay = isHttps || (nodeHost !== 'localhost' && nodeHost !== '127.0.0.1' && nodeHost !== currentHost);
+
+        let finalWsUrl;
+        if (shouldUseRelay) {
+            const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            finalWsUrl = `${proto}//${window.location.host}/ws/ui/stream/${nid}/${bid}`;
+            console.log(`[NETWORK] Routing browser ${bid} through Server Relay (${finalWsUrl})`);
+        } else {
+            finalWsUrl = nodeUrl.replace('http', 'ws') + '/ws/' + bid;
+            console.log(`[NETWORK] Connecting directly to browser ${bid} (${finalWsUrl})`);
+        }
+
+        const ws = new WebSocket(finalWsUrl);
 
         const inst = {
             key,

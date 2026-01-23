@@ -101,6 +101,8 @@ class ConnectionManager:
         self._pending_tasks: Dict[str, asyncio.Future] = {}
         # map task_id -> node_id for cleanup when a node disconnects
         self._pending_task_nodes: Dict[str, str] = {}
+        # Active stream queues for relay
+        self._active_streams: Dict[str, asyncio.Queue] = {}
         self._lock = asyncio.Lock()
         self._broadcast_throttle = 2.0
         self._last_broadcast = 0
@@ -314,8 +316,8 @@ class ConnectionManager:
     
     # ==================== Command System ====================
     
-    async def send_node_command(self, node_id: str, command: str, data: dict = None, timeout: float = 60.0) -> Optional[Dict]:
-        """Send a command to a node and wait for response"""
+    async def send_node_command(self, node_id: str, command: str, data: dict = None, timeout: float = 60.0, wait: bool = True) -> Optional[Dict]:
+        """Send a command to a node and optionally wait for response"""
         if node_id not in self._node_sockets:
             logger.warning(f"Cannot send command to {node_id}: no WebSocket connection")
             return None
@@ -330,6 +332,13 @@ class ConnectionManager:
         try:
             await self._node_sockets[node_id].send_json(msg)
             logger.debug(f"Sent command {command} to {node_id} (task: {task_id})")
+            
+            if not wait:
+                # Fire and forget: remove task tracking immediately and return ok
+                self._pending_tasks.pop(task_id, None)
+                self._pending_task_nodes.pop(task_id, None)
+                return {"status": "sent"}
+                
             return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
             logger.error(f"Command {command} to {node_id} timed out")
@@ -984,7 +993,7 @@ async def rename_build(build_id: int, payload: Dict[str, Any], admin: sqlite3.Ro
 
 
 @app.get('/api/admin/builds/download/{build_id}')
-async def download_build(build_id: int, admin: sqlite3.Row = Depends(get_admin_user)):
+async def download_build(build_id: int):
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     row = conn.execute('SELECT filename FROM node_builds WHERE id = ?', (build_id,)).fetchone()
@@ -999,7 +1008,7 @@ async def download_build(build_id: int, admin: sqlite3.Row = Depends(get_admin_u
 
 
 @app.get('/api/admin/builds/latest')
-async def get_latest_build():
+async def get_latest_build(user: sqlite3.Row = Depends(get_current_user)):
     """Returns metadata for the most recently created build."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -1011,7 +1020,8 @@ async def get_latest_build():
 
 @app.get('/download-latest')
 async def download_latest_node():
-    """Redirects to the latest build download."""
+    """Redirects to the latest build download. Publicly accessible."""
+    
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     row = conn.execute('SELECT id FROM node_builds ORDER BY created_at DESC LIMIT 1').fetchone()
@@ -1059,10 +1069,9 @@ async def get_all_profiles(current_user: sqlite3.Row = Depends(get_current_user)
             pass
     
     return all_profiles
-
 @app.websocket("/ws/node/{node_id}")
 async def node_command_endpoint(websocket: WebSocket, node_id: str):
-    """WebSocket used by nodes to receive commands from the hub"""
+    """WebSocket used by nodes to receive commands and send frames through the tunnel"""
     await websocket.accept()
     await connection_manager.connect_node_websocket(node_id, websocket)
     
@@ -1073,13 +1082,78 @@ async def node_command_endpoint(websocket: WebSocket, node_id: str):
             data = await websocket.receive_json()
             task_id = data.get("task_id")
             if task_id:
-                connection_manager.complete_task(task_id, data.get("result"))
+                # ROUTING: Frames from tunnel streams vs Command results
+                if task_id.startswith("stream_"):
+                    # This is a frame from a proxied browser stream
+                    queue = connection_manager._active_streams.get(task_id)
+                    if queue:
+                        await queue.put(data.get("result")) # Browser message is in 'result'
+                else:
+                    # This is a normal command result
+                    connection_manager.complete_task(task_id, data.get("result"))
     except WebSocketDisconnect:
         logger.info(f"Node {node_id} command channel closed")
     except Exception as e:
         logger.error(f"Node {node_id} command channel error: {e}")
     finally:
         await connection_manager.disconnect_node_websocket(node_id)
+
+@app.websocket("/ws/ui/stream/{node_id}/{browser_id}")
+async def ui_stream_proxy(websocket: WebSocket, node_id: str, browser_id: str):
+    """Proxies UI commands and node frames through the server tunnel"""
+    await websocket.accept()
+    
+    # We use a queue to handle messages coming from the node for this specific browser
+    queue = asyncio.Queue()
+    
+    # Register this UI client as a listener for this browser on this node
+    # The connection_manager needs a way to route specific node messages to this UI
+    task_id = f"stream_{node_id}_{browser_id}_{secrets.token_hex(4)}"
+    
+    try:
+        # 1. Notify the node to start streaming this browser OVER THE TUNNEL
+        await connection_manager.send_node_command(node_id, "start_stream", {
+            "browser_id": browser_id,
+            "stream_id": task_id
+        })
+
+        # Internal listener to catch frames from node and push to UI
+        async def node_to_ui():
+            try:
+                while True:
+                    # In a real implementation, the node sends frames back via node_command_endpoint
+                    # which then needs to be routed here. For now, we'll implement the routing logic.
+                    msg = await queue.get()
+                    await websocket.send_json(msg)
+            except:
+                pass
+
+        # 2. UI to Node (Commands)
+        async def ui_to_node():
+            try:
+                while True:
+                    data = await websocket.receive_json()
+                    # Wrap the UI action into a node command
+                    # We use wait=False for performance (fire-and-forget for mouse/keys)
+                    await connection_manager.send_node_command(node_id, "browser_action", {
+                        "browser_id": browser_id,
+                        "action": data
+                    }, wait=False)
+            except:
+                pass
+
+        # Set the routing in the connection manager
+        connection_manager._active_streams[task_id] = queue
+        
+        await asyncio.gather(node_to_ui(), ui_to_node())
+
+    except Exception as e:
+        logger.error(f"Stream proxy error: {e}")
+    finally:
+        if task_id in connection_manager._active_streams:
+            del connection_manager._active_streams[task_id]
+        # Tell node to stop streaming
+        await connection_manager.send_node_command(node_id, "stop_stream", {"browser_id": browser_id})
 
 @app.delete("/api/delete_profile/{node_id}/{profile_id:path}")
 async def delete_remote_profile(node_id: str, profile_id: str, current_user: sqlite3.Row = Depends(get_current_user)):
